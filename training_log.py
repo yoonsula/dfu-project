@@ -107,6 +107,7 @@ class TrainingLogger:
     finished: bool = False
     finished_at: str | None = None
     total_seconds: float | None = None
+    early_stopping: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         self.output_dir = Path(self.output_dir)
@@ -148,10 +149,15 @@ class TrainingLogger:
             self.best_metrics = dict(metrics)
         self._flush()
 
-    def finalize(self, total_seconds: float) -> None:
+    def finalize(
+        self,
+        total_seconds: float,
+        early_stopping: dict[str, Any] | None = None,
+    ) -> None:
         self.finished = True
         self.finished_at = datetime.now(timezone.utc).isoformat()
         self.total_seconds = round(total_seconds, 2)
+        self.early_stopping = early_stopping or {}
         self._flush()
 
     def _flush(self) -> None:
@@ -169,6 +175,7 @@ class TrainingLogger:
             "best_epoch": self.best_epoch,
             "best_score": self.best_score,
             "best_metrics": self.best_metrics,
+            "early_stopping": self.early_stopping,
         }
         path = self.output_dir / "train_log.json"
         with path.open("w", encoding="utf-8") as handle:

@@ -93,6 +93,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--foot-hflip-prob", type=float, default=0.5)
     parser.add_argument("--limit-train-batches", type=int, default=None)
     parser.add_argument("--limit-val-batches", type=int, default=None)
+    parser.add_argument(
+        "--early-stopping-patience",
+        type=int,
+        default=5,
+        help="Stop if val_dice does not improve for this many epochs. 0 disables early stopping.",
+    )
     return parser.parse_args()
 
 
@@ -383,6 +389,9 @@ def main() -> None:
     print(f"Training logs will be saved to: {args.output_dir}")
 
     best_score = -1.0
+    epochs_without_improvement = 0
+    stopped_early = False
+    stop_epoch: int | None = None
     training_started = perf_counter()
     for epoch in range(1, args.epochs + 1):
         epoch_started = perf_counter()
@@ -410,7 +419,10 @@ def main() -> None:
         save_checkpoint(args.output_dir / "last.pt", model, optimizer, epoch, metrics, args)
         if is_best:
             best_score = score
+            epochs_without_improvement = 0
             save_checkpoint(args.output_dir / "best.pt", model, optimizer, epoch, metrics, args)
+        else:
+            epochs_without_improvement += 1
 
         logger.log_epoch(
             epoch=epoch,
@@ -420,7 +432,34 @@ def main() -> None:
             is_best=is_best,
         )
 
-    logger.finalize(total_seconds=perf_counter() - training_started)
+        if (
+            args.early_stopping_patience > 0
+            and epochs_without_improvement >= args.early_stopping_patience
+        ):
+            stopped_early = True
+            stop_epoch = epoch
+            print(
+                f"Early stopping at epoch {epoch}: "
+                f"no val_dice improvement for {args.early_stopping_patience} epochs "
+                f"(best epoch {logger.best_epoch}, score {logger.best_score:.4f})"
+            )
+            break
+
+    logger.finalize(
+        total_seconds=perf_counter() - training_started,
+        early_stopping={
+            "enabled": args.early_stopping_patience > 0,
+            "patience": args.early_stopping_patience,
+            "stopped_early": stopped_early,
+            "stop_epoch": stop_epoch,
+            "epochs_without_improvement": epochs_without_improvement,
+        },
+    )
+    if stopped_early:
+        print(
+            f"Training stopped early at epoch {stop_epoch}. "
+            f"Best checkpoint: epoch {logger.best_epoch} (val_dice={logger.best_score:.4f})"
+        )
     print(f"Training complete. Logs and checkpoints saved to: {args.output_dir}")
 
 
