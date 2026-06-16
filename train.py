@@ -18,6 +18,7 @@ from paths import DEFAULT_CLOSEUP_NEGATIVE_ROOT
 from paths import DEFAULT_FOOT_ROOT
 from paths import DEFAULT_HUMANBODY_ROOT
 from paths import DEFAULT_ULCER_ROOT
+from paths import DEFAULT_WOUND_IMAGE_ROOT
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
 from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
 from paths import TRAIN_OUTPUT_DIR as DEFAULT_TRAIN_OUTPUT_DIR
@@ -67,6 +68,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--negative-closeup-scale-min", type=float, default=2.0)
     parser.add_argument("--negative-closeup-scale-max", type=float, default=3.5)
     parser.add_argument("--ulcer-root", type=Path, default=DEFAULT_ULCER_ROOT)
+    parser.add_argument("--wound-image-root", type=Path, default=DEFAULT_WOUND_IMAGE_ROOT)
+    parser.add_argument(
+        "--no-wound-image",
+        action="store_true",
+        help="Exclude Wound Image Dataset (wound_main/wound_mask + Nomal negatives).",
+    )
     parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
     parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_TRAIN_OUTPUT_DIR)
@@ -82,6 +89,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-workers", type=int, default=4)
     parser.add_argument("--lr", type=float, default=5.0e-4)
     parser.add_argument("--weight-decay", type=float, default=1.0e-4)
+    parser.add_argument(
+        "--lr-scheduler",
+        type=str,
+        choices=("none", "cosine", "step"),
+        default="cosine",
+        help="Learning rate scheduler. 'cosine' decays to --min-lr over --epochs.",
+    )
+    parser.add_argument("--min-lr", type=float, default=1.0e-6, help="Minimum LR for cosine scheduler.")
+    parser.add_argument("--lr-step-size", type=int, default=10, help="StepLR: decay every N epochs.")
+    parser.add_argument("--lr-gamma", type=float, default=0.1, help="StepLR: multiply LR by this factor.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--unfreeze-backbone", action="store_true")
@@ -91,12 +108,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--foot-scale-min", type=float, default=1.5)
     parser.add_argument("--foot-scale-max", type=float, default=2.5)
     parser.add_argument("--foot-hflip-prob", type=float, default=0.5)
+    parser.add_argument("--val-ratio", type=float, default=0.1, help="Foot roboflow positive val ratio.")
+    parser.add_argument(
+        "--val-negative-ratio",
+        type=float,
+        default=0.25,
+        help="Target fraction of negatives in foot val (body/humanbody/closeup negatives included).",
+    )
+    parser.add_argument(
+        "--ulcer-epoch-multiplier",
+        type=int,
+        default=2,
+        help="Repeat ulcer training batches this many times per epoch.",
+    )
     parser.add_argument("--limit-train-batches", type=int, default=None)
     parser.add_argument("--limit-val-batches", type=int, default=None)
     parser.add_argument(
         "--early-stopping-patience",
         type=int,
-        default=5,
+        default=7,
         help="Stop if val_dice does not improve for this many epochs. 0 disables early stopping.",
     )
     return parser.parse_args()
@@ -128,7 +158,10 @@ def make_loader(
         humanbody_root=None if args.no_humanbody else args.humanbody_root,
         closeup_negative_root=None if args.no_closeup_negative else args.closeup_negative_root,
         ulcer_root=args.ulcer_root,
+        wound_image_root=None if args.no_wound_image else args.wound_image_root,
         image_size=args.image_size,
+        val_ratio=args.val_ratio,
+        val_negative_ratio=args.val_negative_ratio if task == "foot" else 0.0,
         seed=args.seed,
         augment=bool(task == "foot" and split == "train" and args.foot_augment),
         scale_min=args.foot_scale_min,
@@ -211,6 +244,7 @@ def train_epoch(
     device: torch.device,
     use_amp: bool,
     limit_batches: int | None,
+    ulcer_epoch_multiplier: int = 1,
 ) -> dict[str, float]:
     model.train()
     foot_total = 0.0
@@ -228,13 +262,15 @@ def train_epoch(
         foot_steps += 1
         foot_metric_batches.append(metrics)
 
-    for batch in _limited(ulcer_loader, limit_batches):
-        loss, metrics = train_one_task_batch(
-            model, batch, "ulcer", optimizer, scaler, device, use_amp
-        )
-        ulcer_total += loss
-        ulcer_steps += 1
-        ulcer_metric_batches.append(metrics)
+    ulcer_passes = max(1, ulcer_epoch_multiplier)
+    for _ in range(ulcer_passes):
+        for batch in _limited(ulcer_loader, limit_batches):
+            loss, metrics = train_one_task_batch(
+                model, batch, "ulcer", optimizer, scaler, device, use_amp
+            )
+            ulcer_total += loss
+            ulcer_steps += 1
+            ulcer_metric_batches.append(metrics)
 
     foot_loss = foot_total / max(foot_steps, 1)
     ulcer_loss = ulcer_total / max(ulcer_steps, 1)
@@ -304,6 +340,27 @@ def _limited(loader: Iterable, limit: int | None) -> Iterable:
         yield batch
 
 
+def make_lr_scheduler(
+    optimizer: torch.optim.Optimizer,
+    args: argparse.Namespace,
+) -> torch.optim.lr_scheduler.LRScheduler | None:
+    if args.lr_scheduler == "none":
+        return None
+    if args.lr_scheduler == "cosine":
+        return torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=args.epochs,
+            eta_min=args.min_lr,
+        )
+    if args.lr_scheduler == "step":
+        return torch.optim.lr_scheduler.StepLR(
+            optimizer,
+            step_size=args.lr_step_size,
+            gamma=args.lr_gamma,
+        )
+    raise ValueError(f"Unsupported lr scheduler: {args.lr_scheduler}")
+
+
 def make_grad_scaler(use_amp: bool) -> Any:
     if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
         return torch.amp.GradScaler("cuda", enabled=use_amp)
@@ -325,18 +382,19 @@ def save_checkpoint(
     epoch: int,
     metrics: dict[str, float],
     args: argparse.Namespace,
+    scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "epoch": epoch,
-            "model": model.state_dict(),
-            "optimizer": optimizer.state_dict(),
-            "metrics": metrics,
-            "args": vars(args),
-        },
-        path,
-    )
+    payload: dict[str, Any] = {
+        "epoch": epoch,
+        "model": model.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "metrics": metrics,
+        "args": vars(args),
+    }
+    if scheduler is not None:
+        payload["scheduler"] = scheduler.state_dict()
+    torch.save(payload, path)
 
 
 def format_metrics(metrics: dict[str, float]) -> str:
@@ -373,6 +431,7 @@ def main() -> None:
 
     trainable_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
+    scheduler = make_lr_scheduler(optimizer, args)
     scaler = make_grad_scaler(use_amp)
 
     logger = TrainingLogger(args.output_dir)
@@ -404,6 +463,7 @@ def main() -> None:
             device,
             use_amp,
             args.limit_train_batches,
+            ulcer_epoch_multiplier=args.ulcer_epoch_multiplier,
         )
         foot_metrics = validate_task(model, foot_val, "foot", device, args.limit_val_batches)
         ulcer_metrics = validate_task(model, ulcer_val, "ulcer", device, args.limit_val_batches)
@@ -411,16 +471,24 @@ def main() -> None:
         metrics["val_dice"] = 0.5 * (metrics["foot_val_dice"] + metrics["ulcer_val_dice"])
         metrics["val_iou"] = 0.5 * (metrics["foot_val_iou"] + metrics["ulcer_val_iou"])
         metrics["val_accuracy"] = 0.5 * (metrics["foot_val_accuracy"] + metrics["ulcer_val_accuracy"])
+        metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
         score = metrics["val_dice"]
         epoch_seconds = perf_counter() - epoch_started
         is_best = score > best_score
 
-        print(f"epoch={epoch:03d} | {format_metrics(metrics)}")
-        save_checkpoint(args.output_dir / "last.pt", model, optimizer, epoch, metrics, args)
+        display_metrics = {key: value for key, value in metrics.items() if key != "learning_rate"}
+        print(
+            f"epoch={epoch:03d} | lr={metrics['learning_rate']:.2e} | {format_metrics(display_metrics)}"
+        )
+        save_checkpoint(
+            args.output_dir / "last.pt", model, optimizer, epoch, metrics, args, scheduler
+        )
         if is_best:
             best_score = score
             epochs_without_improvement = 0
-            save_checkpoint(args.output_dir / "best.pt", model, optimizer, epoch, metrics, args)
+            save_checkpoint(
+                args.output_dir / "best.pt", model, optimizer, epoch, metrics, args, scheduler
+            )
         else:
             epochs_without_improvement += 1
 
@@ -431,6 +499,9 @@ def main() -> None:
             epoch_seconds=epoch_seconds,
             is_best=is_best,
         )
+
+        if scheduler is not None:
+            scheduler.step()
 
         if (
             args.early_stopping_patience > 0

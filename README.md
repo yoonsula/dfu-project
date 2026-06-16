@@ -166,7 +166,72 @@ python train.py \
 |--------|-----------|
 | Foot | `../데이터/roboflow-foot` |
 | Body | `../데이터/roboflow-body` |
-| Ulcer | `../데이터/wound-segmentation/data/Foot Ulcer Segmentation Challenge` |
+| Human body | `../데이터/roboflow-humanbody` |
+| Ulcer (FUSeg) | `../데이터/wound-segmentation/data/Foot Ulcer Segmentation Challenge` |
+| Wound Image Dataset | `../데이터/Wound Image Dataset` |
+
+## Dataset Acknowledgments
+
+재학습에 사용하는 외부 데이터셋의 저작자를 표기합니다.
+
+### Lower Limb and Feet Wound Image Dataset (Mendeley)
+
+궤양 세그멘테이션 학습에 `Wound Image Dataset` (`wound_main` / `wound_mask` / `Nomal`)을 사용합니다.
+
+- **제목:** Lower Limb and Feet Wound Image Dataset for Medical Analysis
+- **저자:** Md Masudul Islam
+- **라이선스:** [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+- **DOI:** [10.17632/hsj38fwnvr.3](https://doi.org/10.17632/hsj38fwnvr.3)
+- **URL:** [https://data.mendeley.com/datasets/hsj38fwnvr/3](https://data.mendeley.com/datasets/hsj38fwnvr/3)
+
+### Roboflow Universe
+
+```bibtex
+@misc{ human-parts-bru4g_dataset,
+  title = { Human parts Dataset },
+  type = { Open Source Dataset },
+  author = { Personal },
+  howpublished = { \url{ https://universe.roboflow.com/personal-ekd6m/human-parts-bru4g } },
+  url = { https://universe.roboflow.com/personal-ekd6m/human-parts-bru4g },
+  journal = { Roboflow Universe },
+  publisher = { Roboflow },
+  year = { 2025 },
+  month = { feb },
+  note = { visited on 2026-06-16 },
+}
+
+@misc{ body-idcrc_dataset,
+  title = { body Dataset },
+  type = { Open Source Dataset },
+  author = { hell },
+  howpublished = { \url{ https://universe.roboflow.com/hell-khakz/body-idcrc } },
+  url = { https://universe.roboflow.com/hell-khakz/body-idcrc },
+  journal = { Roboflow Universe },
+  publisher = { Roboflow },
+  year = { 2025 },
+  month = { apr },
+  note = { visited on 2026-06-16 },
+}
+
+@misc{ foot-segmentation-dd6qi_dataset,
+  title = { Foot Segmentation Dataset },
+  type = { Open Source Dataset },
+  author = { cv },
+  howpublished = { \url{ https://universe.roboflow.com/cv-v6vyj/foot-segmentation-dd6qi } },
+  url = { https://universe.roboflow.com/cv-v6vyj/foot-segmentation-dd6qi },
+  journal = { Roboflow Universe },
+  publisher = { Roboflow },
+  year = { 2025 },
+  month = { jul },
+  note = { visited on 2026-06-16 },
+}
+```
+
+| 프로젝트 경로 | Roboflow 데이터셋 |
+|---------------|-------------------|
+| `roboflow-foot` | [Foot Segmentation](https://universe.roboflow.com/cv-v6vyj/foot-segmentation-dd6qi) |
+| `roboflow-body` | [body](https://universe.roboflow.com/hell-khakz/body-idcrc) |
+| `roboflow-humanbody` | [Human parts](https://universe.roboflow.com/personal-ekd6m/human-parts-bru4g) |
 
 ## Architecture
 

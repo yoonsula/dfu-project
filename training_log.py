@@ -54,6 +54,7 @@ def collect_dataset_info(
                 None if args.no_closeup_negative else str(args.closeup_negative_root)
             ),
             "ulcer_root": str(args.ulcer_root),
+            "wound_image_root": None if args.no_wound_image else str(args.wound_image_root),
             "dinov3_repo": str(args.dinov3_repo),
             "dinov3_checkpoint": str(args.dinov3_checkpoint),
         },

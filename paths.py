@@ -74,3 +74,7 @@ DEFAULT_ULCER_ROOT = _resolve_path(
     "DFU_ULCER_ROOT",
     DATA_ROOT / "wound-segmentation" / "data" / "Foot Ulcer Segmentation Challenge",
 )
+DEFAULT_WOUND_IMAGE_ROOT = _resolve_path(
+    "DFU_WOUND_IMAGE_ROOT",
+    DATA_ROOT / "Wound Image Dataset",
+)
