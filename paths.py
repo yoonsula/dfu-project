@@ -55,9 +55,14 @@ INFERENCE_OUTPUT_DIR = _resolve_path(
     PROJECT_ROOT / "output" / "inference",
 )
 
+TRAIN_OUTPUT_DIR = _resolve_path(
+    "DFU_TRAIN_OUTPUT_DIR",
+    PROJECT_ROOT / "output" / "train",
+)
+
 # --- Training data (not bundled; override via .env when retraining) ---
 
-DATA_ROOT = _resolve_path("DFU_DATA_ROOT", PROJECT_ROOT / ".." / "데이터")
+DATA_ROOT = _resolve_path("DFU_DATA_ROOT", PROJECT_ROOT / ".." / ".." / "03_데이터")
 DEFAULT_FOOT_ROOT = _resolve_path("DFU_FOOT_ROOT", DATA_ROOT / "roboflow-foot")
 DEFAULT_BODY_ROOT = _resolve_path("DFU_BODY_ROOT", DATA_ROOT / "roboflow-body")
 DEFAULT_HUMANBODY_ROOT = _resolve_path("DFU_HUMANBODY_ROOT", DATA_ROOT / "roboflow-humanbody")

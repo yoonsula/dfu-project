@@ -65,7 +65,9 @@ def binary_segmentation_metrics(
 
     dice = (2.0 * intersection + eps) / (pred_sum + target_sum + eps)
     iou = (intersection + eps) / (union + eps)
+    accuracy = (preds_flat == targets_flat).float().mean(dim=1)
     return {
         "dice": float(dice.mean().item()),
         "iou": float(iou.mean().item()),
+        "accuracy": float(accuracy.mean().item()),
     }

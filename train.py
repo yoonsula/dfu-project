@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 from contextlib import nullcontext
+from datetime import datetime
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Iterable
 
 import torch
@@ -11,7 +13,6 @@ from torch.utils.data import DataLoader
 from datasets import DiabeticFootDataset
 from losses import binary_segmentation_metrics, segmentation_loss
 from models import DINOv3Backbone, MultiTaskSegModel
-from paths import CHECKPOINT_DIR as DEFAULT_OUTPUT_DIR
 from paths import DEFAULT_BODY_ROOT
 from paths import DEFAULT_CLOSEUP_NEGATIVE_ROOT
 from paths import DEFAULT_FOOT_ROOT
@@ -19,6 +20,13 @@ from paths import DEFAULT_HUMANBODY_ROOT
 from paths import DEFAULT_ULCER_ROOT
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
 from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
+from paths import TRAIN_OUTPUT_DIR as DEFAULT_TRAIN_OUTPUT_DIR
+from training_log import (
+    TrainingLogger,
+    collect_dataset_info,
+    collect_environment_info,
+    count_model_parameters,
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,7 +69,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ulcer-root", type=Path, default=DEFAULT_ULCER_ROOT)
     parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
     parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_TRAIN_OUTPUT_DIR)
+    parser.add_argument(
+        "--run-name",
+        type=str,
+        default=None,
+        help="Subdirectory name under --output-dir. Defaults to a timestamp when --output-dir is the default.",
+    )
     parser.add_argument("--image-size", type=int, default=768)
     parser.add_argument("--epochs", type=int, default=10)
     parser.add_argument("--batch-size", type=int, default=8)
@@ -157,18 +171,29 @@ def train_one_task_batch(
     scaler: Any,
     device: torch.device,
     use_amp: bool,
-) -> float:
+) -> tuple[float, dict[str, float]]:
     images, masks, loss_weight = move_batch(batch, device)
     optimizer.zero_grad(set_to_none=True)
 
     with autocast_context(device, use_amp):
         outputs = model(images)
-        loss = segmentation_loss(outputs[task], masks, sample_weights=loss_weight)
+        logits = outputs[task]
+        loss = segmentation_loss(logits, masks, sample_weights=loss_weight)
 
     scaler.scale(loss).backward()
     scaler.step(optimizer)
     scaler.update()
-    return float(loss.detach().item())
+
+    with torch.no_grad():
+        metrics = binary_segmentation_metrics(logits, masks)
+    return float(loss.detach().item()), metrics
+
+
+def _average_metric_batches(metric_batches: list[dict[str, float]]) -> dict[str, float]:
+    if not metric_batches:
+        return {"dice": 0.0, "iou": 0.0, "accuracy": 0.0}
+    keys = metric_batches[0].keys()
+    return {key: sum(batch[key] for batch in metric_batches) / len(metric_batches) for key in keys}
 
 
 def train_epoch(
@@ -186,25 +211,42 @@ def train_epoch(
     ulcer_total = 0.0
     foot_steps = 0
     ulcer_steps = 0
+    foot_metric_batches: list[dict[str, float]] = []
+    ulcer_metric_batches: list[dict[str, float]] = []
 
     for batch in _limited(foot_loader, limit_batches):
-        foot_total += train_one_task_batch(
+        loss, metrics = train_one_task_batch(
             model, batch, "foot", optimizer, scaler, device, use_amp
         )
+        foot_total += loss
         foot_steps += 1
+        foot_metric_batches.append(metrics)
 
     for batch in _limited(ulcer_loader, limit_batches):
-        ulcer_total += train_one_task_batch(
+        loss, metrics = train_one_task_batch(
             model, batch, "ulcer", optimizer, scaler, device, use_amp
         )
+        ulcer_total += loss
         ulcer_steps += 1
+        ulcer_metric_batches.append(metrics)
 
     foot_loss = foot_total / max(foot_steps, 1)
     ulcer_loss = ulcer_total / max(ulcer_steps, 1)
+    foot_metrics = _average_metric_batches(foot_metric_batches)
+    ulcer_metrics = _average_metric_batches(ulcer_metric_batches)
     return {
         "foot_loss": foot_loss,
         "ulcer_loss": ulcer_loss,
         "train_loss": 0.5 * (foot_loss + ulcer_loss),
+        "foot_train_dice": foot_metrics["dice"],
+        "foot_train_iou": foot_metrics["iou"],
+        "foot_train_accuracy": foot_metrics["accuracy"],
+        "ulcer_train_dice": ulcer_metrics["dice"],
+        "ulcer_train_iou": ulcer_metrics["iou"],
+        "ulcer_train_accuracy": ulcer_metrics["accuracy"],
+        "train_dice": 0.5 * (foot_metrics["dice"] + ulcer_metrics["dice"]),
+        "train_iou": 0.5 * (foot_metrics["iou"] + ulcer_metrics["iou"]),
+        "train_accuracy": 0.5 * (foot_metrics["accuracy"] + ulcer_metrics["accuracy"]),
     }
 
 
@@ -220,6 +262,7 @@ def validate_task(
     total_loss = 0.0
     total_dice = 0.0
     total_iou = 0.0
+    total_accuracy = 0.0
     steps = 0
 
     for batch in _limited(loader, limit_batches):
@@ -230,13 +273,18 @@ def validate_task(
         total_loss += float(segmentation_loss(logits, masks, sample_weights=loss_weight).item())
         total_dice += metrics["dice"]
         total_iou += metrics["iou"]
+        total_accuracy += metrics["accuracy"]
         steps += 1
 
     denom = max(steps, 1)
     return {
         f"{task}_val_loss": total_loss / denom,
+        f"{task}_val_dice": total_dice / denom,
+        f"{task}_val_iou": total_iou / denom,
+        f"{task}_val_accuracy": total_accuracy / denom,
         f"{task}_dice": total_dice / denom,
         f"{task}_iou": total_iou / denom,
+        f"{task}_accuracy": total_accuracy / denom,
     }
 
 
@@ -289,8 +337,18 @@ def format_metrics(metrics: dict[str, float]) -> str:
     return " | ".join(f"{key}={value:.4f}" for key, value in sorted(metrics.items()))
 
 
+def resolve_output_dir(args: argparse.Namespace) -> Path:
+    output_dir = Path(args.output_dir)
+    if args.run_name:
+        return output_dir / args.run_name
+    if output_dir.resolve() == DEFAULT_TRAIN_OUTPUT_DIR.resolve():
+        return output_dir / datetime.now().strftime("%Y%m%d_%H%M%S")
+    return output_dir
+
+
 def main() -> None:
     args = parse_args()
+    args.output_dir = resolve_output_dir(args)
     seed_everything(args.seed)
     device = resolve_device(args.device)
     use_amp = bool(args.amp and device.type == "cuda")
@@ -311,8 +369,23 @@ def main() -> None:
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
     scaler = make_grad_scaler(use_amp)
 
+    logger = TrainingLogger(args.output_dir)
+    logger.write_initial_artifacts(
+        args=args,
+        dataset_info=collect_dataset_info(args, foot_train, ulcer_train, foot_val, ulcer_val),
+        environment=collect_environment_info(device),
+        model_info={
+            "model": model.__class__.__name__,
+            "backbone_frozen": not args.unfreeze_backbone,
+            **count_model_parameters(model),
+        },
+    )
+    print(f"Training logs will be saved to: {args.output_dir}")
+
     best_score = -1.0
+    training_started = perf_counter()
     for epoch in range(1, args.epochs + 1):
+        epoch_started = perf_counter()
         train_metrics = train_epoch(
             model,
             foot_train,
@@ -326,13 +399,29 @@ def main() -> None:
         foot_metrics = validate_task(model, foot_val, "foot", device, args.limit_val_batches)
         ulcer_metrics = validate_task(model, ulcer_val, "ulcer", device, args.limit_val_batches)
         metrics = {**train_metrics, **foot_metrics, **ulcer_metrics}
-        score = 0.5 * (metrics["foot_dice"] + metrics["ulcer_dice"])
+        metrics["val_dice"] = 0.5 * (metrics["foot_val_dice"] + metrics["ulcer_val_dice"])
+        metrics["val_iou"] = 0.5 * (metrics["foot_val_iou"] + metrics["ulcer_val_iou"])
+        metrics["val_accuracy"] = 0.5 * (metrics["foot_val_accuracy"] + metrics["ulcer_val_accuracy"])
+        score = metrics["val_dice"]
+        epoch_seconds = perf_counter() - epoch_started
+        is_best = score > best_score
 
         print(f"epoch={epoch:03d} | {format_metrics(metrics)}")
         save_checkpoint(args.output_dir / "last.pt", model, optimizer, epoch, metrics, args)
-        if score > best_score:
+        if is_best:
             best_score = score
             save_checkpoint(args.output_dir / "best.pt", model, optimizer, epoch, metrics, args)
+
+        logger.log_epoch(
+            epoch=epoch,
+            metrics=metrics,
+            score=score,
+            epoch_seconds=epoch_seconds,
+            is_best=is_best,
+        )
+
+    logger.finalize(total_seconds=perf_counter() - training_started)
+    print(f"Training complete. Logs and checkpoints saved to: {args.output_dir}")
 
 
 if __name__ == "__main__":
