@@ -176,8 +176,7 @@ class RealtimeDFUSegmenter:
     ) -> tuple[Any, Any]:
         if frame is None:
             return None, gr.skip()
-        if frame.ndim == 3 and frame.shape[-1] == 3:
-            frame = self._bgr_to_rgb(frame)
+        # Gradio Image(type="numpy") is RGB; WebRTC frames are BGR (handled in process_webrtc).
         overlay, guidance, metrics = self._infer_frame(frame)
         self._last_guidance = guidance
         self._last_metrics = metrics
