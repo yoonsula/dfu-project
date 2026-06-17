@@ -10,6 +10,7 @@ from typing import Any
 import torch
 from torch.utils.data import DataLoader
 
+from cli.dataset_args import foot_roots_for_args
 from datasets import DiabeticFootDataset
 
 
@@ -47,12 +48,12 @@ def collect_dataset_info(
 ) -> dict[str, Any]:
     return {
         "paths": {
-            "foot_root": str(args.foot_root),
-            "body_root": None if args.no_body else str(args.body_root),
-            "humanbody_root": None if args.no_humanbody else str(args.humanbody_root),
-            "closeup_negative_root": (
-                None if args.no_closeup_negative else str(args.closeup_negative_root)
-            ),
+            "foot_roots": [
+                str(path)
+                for path in foot_roots_for_args(args)
+            ],
+            "body_root": str(args.body_root),
+            "humanbody_root": str(args.humanbody_root),
             "ulcer_root": str(args.ulcer_root),
             "wound_image_root": None if args.no_wound_image else str(args.wound_image_root),
             "dinov3_repo": str(args.dinov3_repo),

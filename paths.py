@@ -60,16 +60,21 @@ TRAIN_OUTPUT_DIR = _resolve_path(
     PROJECT_ROOT / "output" / "train",
 )
 
+FEATURE_CACHE_DIR = _resolve_path(
+    "DFU_FEATURE_CACHE_DIR",
+    PROJECT_ROOT / "output" / "feature_cache",
+)
+
 # --- Training data (not bundled; override via .env when retraining) ---
 
 DATA_ROOT = _resolve_path("DFU_DATA_ROOT", PROJECT_ROOT / ".." / ".." / "03_데이터")
 DEFAULT_FOOT_ROOT = _resolve_path("DFU_FOOT_ROOT", DATA_ROOT / "roboflow-foot")
+DEFAULT_DFU_FOOT_ROOT = _resolve_path(
+    "DFU_DFU_FOOT_ROOT",
+    DATA_ROOT / "dfu-foot-sam3-filtered" / "train",
+)
 DEFAULT_BODY_ROOT = _resolve_path("DFU_BODY_ROOT", DATA_ROOT / "roboflow-body")
 DEFAULT_HUMANBODY_ROOT = _resolve_path("DFU_HUMANBODY_ROOT", DATA_ROOT / "roboflow-humanbody")
-DEFAULT_CLOSEUP_NEGATIVE_ROOT = _resolve_path(
-    "DFU_CLOSEUP_NEGATIVE_ROOT",
-    DATA_ROOT / "closeup-negative",
-)
 DEFAULT_ULCER_ROOT = _resolve_path(
     "DFU_ULCER_ROOT",
     DATA_ROOT / "wound-segmentation" / "data" / "Foot Ulcer Segmentation Challenge",

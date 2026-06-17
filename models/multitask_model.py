@@ -31,26 +31,43 @@ class MultiTaskSegModel(nn.Module):
             num_queries=ulcer_num_queries,
         )
 
-    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
-        features = self.backbone(x)
+    def encode(self, x: torch.Tensor) -> torch.Tensor:
+        return self.backbone(x)
 
+    def predict_foot_logits(
+        self,
+        features: torch.Tensor,
+        output_size: tuple[int, int] | None = None,
+    ) -> torch.Tensor:
         foot_logits = self.foot_head(features)
+        if output_size is not None:
+            foot_logits = F.interpolate(
+                foot_logits,
+                size=output_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+        return foot_logits
+
+    def predict_ulcer_logits(
+        self,
+        features: torch.Tensor,
+        output_size: tuple[int, int] | None = None,
+    ) -> torch.Tensor:
         ulcer_logits = self.ulcer_head(features)
+        if output_size is not None:
+            ulcer_logits = F.interpolate(
+                ulcer_logits,
+                size=output_size,
+                mode="bilinear",
+                align_corners=False,
+            )
+        return ulcer_logits
 
-        foot_logits = F.interpolate(
-            foot_logits,
-            size=x.shape[-2:],
-            mode="bilinear",
-            align_corners=False,
-        )
-        ulcer_logits = F.interpolate(
-            ulcer_logits,
-            size=x.shape[-2:],
-            mode="bilinear",
-            align_corners=False,
-        )
-
+    def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
+        output_size = x.shape[-2:]
+        features = self.encode(x)
         return {
-            "foot": foot_logits,
-            "ulcer": ulcer_logits,
+            "foot": self.predict_foot_logits(features, output_size),
+            "ulcer": self.predict_ulcer_logits(features, output_size),
         }

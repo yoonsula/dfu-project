@@ -88,8 +88,18 @@ dfu-project/
 ├── models/
 │   ├── backbone.py                     # DINOv3 feature extractor
 │   ├── dfu_classifier.py               # DINOv3 + linear head
+│   ├── fastinst_head.py                 # shared segmentation head block
 │   ├── foot_head.py / ulcer_head.py
 │   └── multitask_model.py
+├── datasets/
+│   ├── catalog.py                       # training data source list
+│   ├── source_loaders.py                # COCO / FUSeg / Wound loaders
+│   ├── samples.py                       # SegmentationSample
+│   └── diabetic_foot_dataset.py
+├── data/loaders.py                      # DataLoader factory
+├── cli/dataset_args.py                  # shared dataset CLI flags
+├── inference/pipeline.py                # staged foot → ulcer inference
+├── utils/                               # runtime / image helpers
 ├── infer.py                            # 통합 inference (seg + classification)
 ├── infer_classification.py             # 분류 단독 inference
 ├── app_gradio.py                       # Gradio + FastRTC UI
@@ -151,7 +161,7 @@ python app_gradio.py \
 
 ## Training (Optional)
 
-재학습 시 학습 데이터를 별도로 준비해야 합니다. 기본 데이터 경로는 `../데이터/`이며 `.env`로 변경 가능합니다.
+재학습 시 학습 데이터를 별도로 준비해야 합니다. 기본 데이터 경로는 `../../03_데이터/`이며 `.env` 또는 환경 변수로 변경 가능합니다.
 
 ```bash
 python train.py \
@@ -164,11 +174,28 @@ python train.py \
 
 | 데이터 | 기본 경로 |
 |--------|-----------|
-| Foot | `../데이터/roboflow-foot` |
-| Body | `../데이터/roboflow-body` |
-| Human body | `../데이터/roboflow-humanbody` |
-| Ulcer (FUSeg) | `../데이터/wound-segmentation/data/Foot Ulcer Segmentation Challenge` |
-| Wound Image Dataset | `../데이터/Wound Image Dataset` |
+| Foot (Roboflow) | `../../03_데이터/roboflow-foot` |
+| Foot (DFU SAM3) | `../../03_데이터/dfu-foot-sam3-filtered/train` |
+| Body hard negatives | `../../03_데이터/roboflow-body` |
+| Human body hard negatives | `../../03_데이터/roboflow-humanbody` |
+| Ulcer (FUSeg) | `../../03_데이터/wound-segmentation/data/Foot Ulcer Segmentation Challenge` |
+| Wound Image Dataset | `../../03_데이터/Wound Image Dataset` |
+
+### Dataset Catalog
+
+학습 데이터는 `datasets/catalog.py`에서 한눈에 볼 수 있게 관리합니다.
+
+- **Foot detection**: `roboflow-foot`, `dfu-foot-sam3-filtered/train`, `roboflow-body`, `roboflow-humanbody`
+- **Ulcer detection**: `Foot Ulcer Segmentation Challenge`, `Wound Image Dataset`
+
+새 COCO foot dataset을 기본 학습에 추가하려면 `datasets/catalog.py`의 foot source 목록에 한 줄을 추가하면 됩니다. 실험용으로만 추가할 때는 `--foot-root`를 반복해서 넘길 수 있습니다.
+
+```bash
+python train.py \
+  --foot-root ../../03_데이터/roboflow-foot \
+  --foot-root ../../03_데이터/dfu-foot-sam3-filtered/train \
+  --image-size 384 --batch-size 64 --amp
+```
 
 ## Dataset Acknowledgments
 

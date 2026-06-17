@@ -1,42 +1,28 @@
 from __future__ import annotations
 
-import json
 import random
-from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 import numpy as np
 import torch
 from PIL import Image, ImageDraw
 from torch.utils.data import Dataset
 
+from datasets.catalog import default_foot_roots
+from datasets.catalog import foot_extra_coco_sources
+from datasets.catalog import foot_primary_sources
+from datasets.catalog import ulcer_sources
+from datasets.samples import SegmentationSample
+from datasets.source_loaders import load_coco_samples
+from datasets.source_loaders import load_fuseg_samples
+from datasets.source_loaders import load_wound_image_samples
 from paths import DEFAULT_BODY_ROOT
-from paths import DEFAULT_CLOSEUP_NEGATIVE_ROOT
-from paths import DEFAULT_FOOT_ROOT
 from paths import DEFAULT_HUMANBODY_ROOT
 from paths import DEFAULT_ULCER_ROOT
 from paths import DEFAULT_WOUND_IMAGE_ROOT
-BODY_FOOT_CATEGORY_IDS = {1}
-HUMANBODY_FOOT_CATEGORY_IDS = {5, 10}
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
-
-
-@dataclass(frozen=True)
-class SegmentationSample:
-    image_path: Path
-    mask_path: Path | None = None
-    image_id: int | None = None
-    annotations: tuple[dict[str, Any], ...] = ()
-    augment_profile: str = "none"
-
-    @property
-    def is_negative(self) -> bool:
-        if self.mask_path is not None:
-            return False
-        return len(self.annotations) == 0
 
 
 def _resampling(name: str) -> int:
@@ -52,10 +38,9 @@ class DiabeticFootDataset(Dataset):
         self,
         task: str,
         split: str,
-        foot_root: str | Path = DEFAULT_FOOT_ROOT,
+        foot_roots: str | Path | Sequence[str | Path] | None = None,
         body_root: str | Path | None = DEFAULT_BODY_ROOT,
         humanbody_root: str | Path | None = DEFAULT_HUMANBODY_ROOT,
-        closeup_negative_root: str | Path | None = DEFAULT_CLOSEUP_NEGATIVE_ROOT,
         ulcer_root: str | Path = DEFAULT_ULCER_ROOT,
         wound_image_root: str | Path | None = DEFAULT_WOUND_IMAGE_ROOT,
         image_size: int = 768,
@@ -68,11 +53,6 @@ class DiabeticFootDataset(Dataset):
         hflip_prob: float = 0.0,
         negative_oversample: int = 1,
         neg_sample_weight: float = 1.0,
-        negative_fullbody_scale_min: float = 1.2,
-        negative_fullbody_scale_max: float = 1.8,
-        negative_closeup_scale_min: float = 2.0,
-        negative_closeup_scale_max: float = 3.5,
-        synthetic_closeup_from_humanbody: bool = False,
     ) -> None:
         if task not in {"foot", "ulcer"}:
             raise ValueError(f"Unsupported task: {task}")
@@ -81,12 +61,9 @@ class DiabeticFootDataset(Dataset):
 
         self.task = task
         self.split = "val" if split == "validation" else split
-        self.foot_root = Path(foot_root)
+        self.foot_roots = default_foot_roots() if foot_roots is None else self._normalize_foot_roots(foot_roots)
         self.body_root = Path(body_root) if body_root is not None else None
         self.humanbody_root = Path(humanbody_root) if humanbody_root is not None else None
-        self.closeup_negative_root = (
-            Path(closeup_negative_root) if closeup_negative_root is not None else None
-        )
         self.ulcer_root = Path(ulcer_root)
         self.wound_image_root = Path(wound_image_root) if wound_image_root is not None else None
         self.image_size = int(image_size)
@@ -99,15 +76,19 @@ class DiabeticFootDataset(Dataset):
         self.hflip_prob = float(hflip_prob)
         self.negative_oversample = max(1, int(negative_oversample))
         self.neg_sample_weight = float(neg_sample_weight)
-        self.negative_fullbody_scale_min = float(negative_fullbody_scale_min)
-        self.negative_fullbody_scale_max = float(negative_fullbody_scale_max)
-        self.negative_closeup_scale_min = float(negative_closeup_scale_min)
-        self.negative_closeup_scale_max = float(negative_closeup_scale_max)
-        self.synthetic_closeup_from_humanbody = bool(synthetic_closeup_from_humanbody)
         self.samples = self._load_samples()
 
         if not self.samples:
             raise RuntimeError(f"No samples found for task={self.task!r}, split={self.split!r}")
+
+    @staticmethod
+    def _normalize_foot_roots(foot_roots: str | Path | Sequence[str | Path]) -> tuple[Path, ...]:
+        if isinstance(foot_roots, (str, Path)):
+            return (Path(foot_roots),)
+        roots = tuple(Path(root) for root in foot_roots)
+        if not roots:
+            raise ValueError("foot_roots must contain at least one path")
+        return roots
 
     def _load_samples(self) -> list[SegmentationSample]:
         if self.task == "foot":
@@ -122,61 +103,42 @@ class DiabeticFootDataset(Dataset):
 
     def _split_foot_train_val(self) -> tuple[list[SegmentationSample], list[SegmentationSample]]:
         rng = random.Random(self.seed)
-        roboflow_samples = self._load_all_roboflow_foot_samples()
+        primary_profile = "positive" if self.split == "train" and self.augment else "natural"
+        primary_samples = self._load_primary_foot_samples(primary_profile)
 
         train_extras: list[SegmentationSample] = []
         val_negative_pool: list[SegmentationSample] = []
-        humanbody_negatives: list[SegmentationSample] = []
 
-        if self.body_root is not None:
-            body_samples = self._load_coco_foot_samples(
-                self.body_root,
-                BODY_FOOT_CATEGORY_IDS,
-                positive_profile="natural",
-                negative_profile="negative_fullbody",
+        for source in foot_extra_coco_sources(
+            body_root=self.body_root,
+            humanbody_root=self.humanbody_root,
+        ):
+            source_samples = load_coco_samples(
+                source.root,
+                category_ids=source.category_ids,
+                positive_profile=source.positive_profile,
+                negative_profile=source.negative_profile,
+                missing_ok=source.missing_ok,
             )
-            train_extras.extend(sample for sample in body_samples if not sample.is_negative)
-            body_negatives = [sample for sample in body_samples if sample.is_negative]
+            train_extras.extend(sample for sample in source_samples if not sample.is_negative)
+            source_negatives = [sample for sample in source_samples if sample.is_negative]
             if self.val_negative_ratio > 0:
-                val_negative_pool.extend(body_negatives)
+                val_negative_pool.extend(source_negatives)
             else:
-                train_extras.extend(body_negatives)
+                train_extras.extend(source_negatives)
 
-        if self.humanbody_root is not None:
-            humanbody_samples = self._load_coco_foot_samples(
-                self.humanbody_root,
-                HUMANBODY_FOOT_CATEGORY_IDS,
-                positive_profile="natural",
-                negative_profile="negative_fullbody",
-            )
-            train_extras.extend(sample for sample in humanbody_samples if not sample.is_negative)
-            humanbody_negatives = [
-                sample for sample in humanbody_samples if sample.is_negative
-            ]
-            if self.val_negative_ratio > 0:
-                val_negative_pool.extend(humanbody_negatives)
-            else:
-                train_extras.extend(humanbody_negatives)
+        primary_positives = [sample for sample in primary_samples if not sample.is_negative]
+        primary_negatives = [sample for sample in primary_samples if sample.is_negative]
+        rng.shuffle(primary_positives)
+        rng.shuffle(primary_negatives)
 
-        if self.closeup_negative_root is not None:
-            closeup_negatives = self._load_closeup_negative_images(self.closeup_negative_root)
-            if self.val_negative_ratio > 0:
-                val_negative_pool.extend(closeup_negatives)
-            else:
-                train_extras.extend(closeup_negatives)
-
-        roboflow_positives = [sample for sample in roboflow_samples if not sample.is_negative]
-        roboflow_negatives = [sample for sample in roboflow_samples if sample.is_negative]
-        rng.shuffle(roboflow_positives)
-        rng.shuffle(roboflow_negatives)
-
-        positive_val_count = max(1, int(round(len(roboflow_positives) * self.val_ratio)))
-        positive_val_count = min(positive_val_count, len(roboflow_positives))
-        val_positives = roboflow_positives[:positive_val_count]
-        train_positives = roboflow_positives[positive_val_count:]
+        positive_val_count = max(1, int(round(len(primary_positives) * self.val_ratio)))
+        positive_val_count = min(positive_val_count, len(primary_positives))
+        val_positives = primary_positives[:positive_val_count]
+        train_positives = primary_positives[positive_val_count:]
 
         if self.val_negative_ratio > 0:
-            val_negative_pool.extend(roboflow_negatives)
+            val_negative_pool.extend(primary_negatives)
             rng.shuffle(val_negative_pool)
             negative_val_count = self._foot_negative_val_count(
                 len(val_positives),
@@ -185,18 +147,12 @@ class DiabeticFootDataset(Dataset):
             val_negatives = val_negative_pool[:negative_val_count]
             train_negatives = val_negative_pool[negative_val_count:]
         else:
-            negative_val_count = max(1, int(round(len(roboflow_negatives) * self.val_ratio)))
-            negative_val_count = min(negative_val_count, len(roboflow_negatives))
-            val_negatives = roboflow_negatives[:negative_val_count]
-            train_negatives = roboflow_negatives[negative_val_count:] + val_negative_pool
+            negative_val_count = max(1, int(round(len(primary_negatives) * self.val_ratio)))
+            negative_val_count = min(negative_val_count, len(primary_negatives))
+            val_negatives = primary_negatives[:negative_val_count]
+            train_negatives = primary_negatives[negative_val_count:] + val_negative_pool
 
         train_samples = train_positives + train_extras + train_negatives
-        if self.synthetic_closeup_from_humanbody and humanbody_negatives:
-            train_samples.extend(
-                replace(sample, augment_profile="negative_closeup")
-                for sample in humanbody_negatives
-            )
-
         val_samples = val_positives + val_negatives
         return train_samples, val_samples
 
@@ -212,94 +168,31 @@ class DiabeticFootDataset(Dataset):
         )
         return max(1, min(target, negative_count))
 
-    def _load_all_roboflow_foot_samples(self) -> list[SegmentationSample]:
-        annotation_path = self.foot_root / "_annotations.coco.json"
-        if not annotation_path.exists():
-            raise FileNotFoundError(f"Roboflow COCO annotation file not found: {annotation_path}")
-
-        with annotation_path.open("r", encoding="utf-8") as handle:
-            coco = json.load(handle)
-
-        annotations_by_image: dict[int, list[dict[str, Any]]] = {}
-        for annotation in coco.get("annotations", []):
-            annotations_by_image.setdefault(int(annotation["image_id"]), []).append(annotation)
-
+    def _load_primary_foot_samples(self, positive_profile: str) -> list[SegmentationSample]:
         samples: list[SegmentationSample] = []
-        for image_info in coco.get("images", []):
-            image_path = self.foot_root / image_info["file_name"]
-            if not image_path.exists():
+        missing: list[Path] = []
+        for source in foot_primary_sources(self.foot_roots, positive_profile=positive_profile):
+            annotation_path = source.root / "_annotations.coco.json"
+            if not annotation_path.exists():
+                missing.append(annotation_path)
                 continue
-            image_id = int(image_info["id"])
-            annotations = tuple(annotations_by_image.get(image_id, []))
-            if self.split == "train" and self.augment:
-                profile = "positive"
-            else:
-                profile = "natural" if annotations else "none"
-            samples.append(
-                SegmentationSample(
-                    image_path=image_path,
-                    image_id=image_id,
-                    annotations=annotations,
-                    augment_profile=profile,
+            samples.extend(
+                load_coco_samples(
+                    source.root,
+                    category_ids=source.category_ids,
+                    positive_profile=source.positive_profile,
+                    negative_profile=source.negative_profile,
+                    missing_ok=source.missing_ok,
                 )
             )
-        return samples
-
-    def _load_coco_foot_samples(
-        self,
-        root: Path,
-        foot_category_ids: set[int],
-        positive_profile: str,
-        negative_profile: str,
-    ) -> list[SegmentationSample]:
-        annotation_path = root / "_annotations.coco.json"
-        if not annotation_path.exists():
-            raise FileNotFoundError(f"Roboflow COCO annotation file not found: {annotation_path}")
-
-        with annotation_path.open("r", encoding="utf-8") as handle:
-            coco = json.load(handle)
-
-        annotations_by_image: dict[int, list[dict[str, Any]]] = {}
-        for annotation in coco.get("annotations", []):
-            if int(annotation["category_id"]) not in foot_category_ids:
-                continue
-            annotations_by_image.setdefault(int(annotation["image_id"]), []).append(annotation)
-
-        samples: list[SegmentationSample] = []
-        for image_info in coco.get("images", []):
-            image_path = root / image_info["file_name"]
-            if not image_path.exists():
-                continue
-            image_id = int(image_info["id"])
-            annotations = tuple(annotations_by_image.get(image_id, []))
-            profile = positive_profile if annotations else negative_profile
-            samples.append(
-                SegmentationSample(
-                    image_path=image_path,
-                    image_id=image_id,
-                    annotations=annotations,
-                    augment_profile=profile,
+        if not samples:
+            if missing and len(missing) == len(self.foot_roots):
+                raise FileNotFoundError(
+                    "COCO annotation file not found in any foot root: "
+                    + ", ".join(str(path) for path in missing)
                 )
-            )
-        return samples
-
-    @staticmethod
-    def _load_closeup_negative_images(root: Path) -> list[SegmentationSample]:
-        if not root.exists():
-            return []
-
-        samples: list[SegmentationSample] = []
-        for image_path in sorted(root.rglob("*")):
-            if not image_path.is_file():
-                continue
-            if image_path.suffix.lower() not in IMAGE_EXTENSIONS:
-                continue
-            samples.append(
-                SegmentationSample(
-                    image_path=image_path,
-                    augment_profile="negative_closeup",
-                )
-            )
+            roots = ", ".join(str(root) for root in self.foot_roots)
+            raise RuntimeError(f"No foot COCO samples found under: {roots}")
         return samples
 
     def _oversample_negatives(self, samples: list[SegmentationSample]) -> list[SegmentationSample]:
@@ -311,51 +204,14 @@ class DiabeticFootDataset(Dataset):
         return positives + negatives * self.negative_oversample
 
     def _load_ulcer_samples(self) -> list[SegmentationSample]:
-        samples = self._load_fuseg_ulcer_samples()
-        if self.wound_image_root is not None:
-            wound_samples = self._load_wound_image_dataset_samples()
+        fuseg_source, wound_source = ulcer_sources(
+            ulcer_root=self.ulcer_root,
+            wound_image_root=self.wound_image_root,
+        )
+        samples = load_fuseg_samples(fuseg_source.root, self.split)
+        if wound_source is not None:
+            wound_samples = load_wound_image_samples(wound_source.root)
             samples.extend(self._split_samples_by_val_ratio(wound_samples))
-        return samples
-
-    def _load_fuseg_ulcer_samples(self) -> list[SegmentationSample]:
-        split_dir = "validation" if self.split == "val" else "train"
-        image_dir = self.ulcer_root / split_dir / "images"
-        label_dir = self.ulcer_root / split_dir / "labels"
-        if not image_dir.exists() or not label_dir.exists():
-            raise FileNotFoundError(f"FUSeg split directories not found under: {self.ulcer_root / split_dir}")
-
-        label_by_stem = {path.stem: path for path in sorted(label_dir.iterdir()) if path.is_file()}
-        samples = []
-        for image_path in sorted(path for path in image_dir.iterdir() if path.is_file()):
-            mask_path = label_by_stem.get(image_path.stem)
-            if mask_path is not None:
-                samples.append(SegmentationSample(image_path=image_path, mask_path=mask_path))
-        return samples
-
-    def _load_wound_image_dataset_samples(self) -> list[SegmentationSample]:
-        root = self.wound_image_root
-        if root is None or not root.exists():
-            return []
-
-        samples: list[SegmentationSample] = []
-        main_dir = root / "wound_main"
-        mask_dir = root / "wound_mask"
-        if main_dir.is_dir() and mask_dir.is_dir():
-            for image_path in sorted(path for path in main_dir.iterdir() if path.is_file()):
-                if image_path.suffix.lower() not in IMAGE_EXTENSIONS:
-                    continue
-                suffix = image_path.stem.removeprefix("wound_main-")
-                mask_path = mask_dir / f"wound_mask-{suffix}{image_path.suffix}"
-                if mask_path.is_file():
-                    samples.append(SegmentationSample(image_path=image_path, mask_path=mask_path))
-
-        for normal_dir_name in ("Nomal", "Normal"):
-            normal_dir = root / normal_dir_name
-            if not normal_dir.is_dir():
-                continue
-            for image_path in sorted(path for path in normal_dir.iterdir() if path.is_file()):
-                if image_path.suffix.lower() in IMAGE_EXTENSIONS:
-                    samples.append(SegmentationSample(image_path=image_path))
         return samples
 
     def _split_samples_by_val_ratio(self, samples: list[SegmentationSample]) -> list[SegmentationSample]:
@@ -416,22 +272,6 @@ class DiabeticFootDataset(Dataset):
                 mask,
                 self.scale_min,
                 self.scale_max,
-                self.hflip_prob,
-            )
-        if profile == "negative_fullbody":
-            return self._apply_scale_hflip(
-                image,
-                mask,
-                self.negative_fullbody_scale_min,
-                self.negative_fullbody_scale_max,
-                self.hflip_prob,
-            )
-        if profile == "negative_closeup":
-            return self._apply_scale_hflip(
-                image,
-                mask,
-                self.negative_closeup_scale_min,
-                self.negative_closeup_scale_max,
                 self.hflip_prob,
             )
         return image, mask

@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Iterable
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 from PIL import Image
 
-from datasets.diabetic_foot_dataset import IMAGENET_MEAN, IMAGENET_STD
+from inference.pipeline import SegmentationConfig
+from inference.pipeline import run_gated_segmentation
+from inference.pipeline import render_overlay
 from infer_classification import ClassificationBundle, classify_image, load_classification_bundle
 from models import DINOv3Backbone, MultiTaskSegModel
 from paths import DEFAULT_CLASSIFICATION_CHECKPOINT
@@ -20,7 +21,10 @@ from paths import INFERENCE_OUTPUT_DIR as DEFAULT_OUTPUT_DIR
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
 from paths import DINOV3_HF_MODEL_DIR as DEFAULT_DINOV3_HF_MODEL_DIR
 from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+from utils.image_io import iter_images
+from utils.runtime import resolve_device
+
+DEFAULT_IMAGE_SIZE = 384
 
 
 @dataclass(frozen=True)
@@ -45,6 +49,8 @@ class InferenceResult:
     center_tolerance: float
     min_ulcer_ratio: float
     preprocess_ms: float
+    backbone_ms: float
+    foot_head_ms: float
     model_ms: float
     ulcer_head_ms: float
     postprocess_ms: float
@@ -69,12 +75,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
     parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
-    parser.add_argument("--image-size", type=int, default=768)
+    parser.add_argument(
+        "--image-size",
+        type=int,
+        default=None,
+        help="Model input resolution. Defaults to checkpoint args.image_size, then 384.",
+    )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--foot-threshold", type=float, default=0.5)
     parser.add_argument("--ulcer-threshold", type=float, default=0.5)
-    parser.add_argument("--min-foot-ratio", type=float, default=0.01)
-    parser.add_argument("--max-foot-ratio", type=float, default=0.8)
+    parser.add_argument("--min-foot-ratio", type=float, default=0.08)
+    parser.add_argument("--max-foot-ratio", type=float, default=0.5)
     parser.add_argument("--center-tolerance", type=float, default=0.25)
     parser.add_argument("--min-ulcer-ratio", type=float, default=0.001)
     parser.add_argument("--overlay-alpha", type=float, default=0.4)
@@ -99,17 +110,6 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def resolve_device(name: str) -> torch.device:
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(name)
-
-
-def synchronize_if_needed(device: torch.device) -> None:
-    if device.type == "cuda" and torch.cuda.is_available():
-        torch.cuda.synchronize()
-
-
 def load_model(args: argparse.Namespace, device: torch.device) -> MultiTaskSegModel:
     if not args.checkpoint.exists():
         raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
@@ -122,113 +122,44 @@ def load_model(args: argparse.Namespace, device: torch.device) -> MultiTaskSegMo
     model = MultiTaskSegModel(backbone=backbone).to(device)
     checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
     state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
-    model.load_state_dict(state_dict, strict=False)
+    missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
+    if missing_keys or unexpected_keys:
+        warnings.warn(
+            "Checkpoint loaded with non-strict key mismatch: "
+            f"missing={missing_keys}, unexpected={unexpected_keys}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
     model.eval()
     return model
 
 
-def iter_images(path: Path) -> Iterable[Path]:
-    if path.is_file():
-        if path.suffix.lower() not in IMAGE_EXTENSIONS:
-            raise ValueError(f"Unsupported image extension: {path}")
-        yield path
-        return
+def resolve_image_size_from_checkpoint(
+    checkpoint_path: Path,
+    requested_image_size: int | None,
+) -> int:
+    if requested_image_size is not None:
+        return int(requested_image_size)
+    try:
+        checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=False)
+    except Exception as exc:
+        warnings.warn(
+            f"Could not read image_size from checkpoint ({exc}); using {DEFAULT_IMAGE_SIZE}.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return DEFAULT_IMAGE_SIZE
 
-    if not path.is_dir():
-        raise FileNotFoundError(f"Input image path not found: {path}")
-
-    for image_path in sorted(path.rglob("*")):
-        if image_path.is_file() and image_path.suffix.lower() in IMAGE_EXTENSIONS:
-            yield image_path
-
-
-def preprocess_image(image: Image.Image, image_size: int, device: torch.device) -> torch.Tensor:
-    resized = image.resize((image_size, image_size), Image.Resampling.BILINEAR)
-    array = np.asarray(resized, dtype=np.float32) / 255.0
-    tensor = torch.from_numpy(array).permute(2, 0, 1)
-    mean = torch.tensor(IMAGENET_MEAN, dtype=tensor.dtype).view(3, 1, 1)
-    std = torch.tensor(IMAGENET_STD, dtype=tensor.dtype).view(3, 1, 1)
-    tensor = (tensor - mean) / std
-    return tensor.unsqueeze(0).to(device)
-
-
-def guidance_from_foot_ratio(
-    foot_area_ratio: float,
-    min_foot_ratio: float,
-    max_foot_ratio: float,
-) -> tuple[bool, str]:
-    if foot_area_ratio < min_foot_ratio:
-        return False, "발이 충분히 보이지 않습니다. 더 가까이 또는 발 전체가 보이게 촬영하세요."
-    if foot_area_ratio > max_foot_ratio:
-        return False, "발이 너무 크게 찍혔습니다. 조금 멀리서 촬영하세요."
-    return True, "촬영 거리가 적절합니다."
-
-
-def foot_center_from_mask(mask: np.ndarray) -> tuple[float, float] | tuple[None, None]:
-    ys, xs = np.nonzero(mask)
-    if len(xs) == 0 or len(ys) == 0:
-        return None, None
-    height, width = mask.shape
-    center_x = float(xs.mean() / max(width - 1, 1))
-    center_y = float(ys.mean() / max(height - 1, 1))
-    return center_x, center_y
-
-
-def guidance_from_foot_center(
-    center_x: float | None,
-    center_y: float | None,
-    tolerance: float,
-) -> tuple[bool, str]:
-    if center_x is None or center_y is None:
-        return False, "발 위치를 확인할 수 없습니다. 발이 화면 중앙에 오도록 촬영하세요."
-
-    offset_x = center_x - 0.5
-    offset_y = center_y - 0.5
-    if abs(offset_x) <= tolerance and abs(offset_y) <= tolerance:
-        return True, "발이 화면 중앙에 잘 위치해 있습니다."
-
-    directions = []
-    if offset_x < -tolerance:
-        directions.append("오른쪽")
-    elif offset_x > tolerance:
-        directions.append("왼쪽")
-    if offset_y < -tolerance:
-        directions.append("아래쪽")
-    elif offset_y > tolerance:
-        directions.append("위쪽")
-
-    direction_text = " 및 ".join(directions)
-    return False, f"발이 화면 중앙에서 벗어났습니다. 발이 가운데 오도록 {direction_text}으로 조정하세요."
-
-
-def resize_mask(mask: np.ndarray, size: tuple[int, int]) -> np.ndarray:
-    mask_image = Image.fromarray((mask.astype(np.uint8) * 255), mode="L")
-    resized = mask_image.resize(size, Image.Resampling.NEAREST)
-    return (np.asarray(resized, dtype=np.uint8) > 0).astype(np.uint8)
+    if isinstance(checkpoint, dict):
+        args = checkpoint.get("args")
+        if isinstance(args, dict) and args.get("image_size") is not None:
+            return int(args["image_size"])
+    return DEFAULT_IMAGE_SIZE
 
 
 def save_mask(mask: np.ndarray, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     Image.fromarray((mask.astype(np.uint8) * 255), mode="L").save(path)
-
-
-def render_overlay(
-    image: Image.Image,
-    foot_mask: np.ndarray,
-    ulcer_mask: np.ndarray,
-    alpha: float,
-) -> Image.Image:
-    base = np.asarray(image.convert("RGB"), dtype=np.float32)
-    overlay = base.copy()
-
-    foot_bool = foot_mask.astype(bool)
-    ulcer_bool = ulcer_mask.astype(bool)
-
-    foot_color = np.asarray([0, 128, 255], dtype=np.float32)
-    ulcer_color = np.asarray([255, 0, 0], dtype=np.float32)
-    overlay[foot_bool] = overlay[foot_bool] * (1.0 - alpha) + foot_color * alpha
-    overlay[ulcer_bool] = overlay[ulcer_bool] * (1.0 - alpha) + ulcer_color * alpha
-    return Image.fromarray(np.clip(overlay, 0, 255).astype(np.uint8), mode="RGB")
 
 
 @torch.inference_mode()
@@ -241,65 +172,30 @@ def predict_image(
 ) -> InferenceResult:
     total_start = perf_counter()
 
-    preprocess_start = perf_counter()
     with Image.open(image_path) as raw_image:
         image = raw_image.convert("RGB")
 
-    input_tensor = preprocess_image(image, args.image_size, device)
-    synchronize_if_needed(device)
-    preprocess_ms = (perf_counter() - preprocess_start) * 1000.0
-
-    model_start = perf_counter()
-    outputs = model(input_tensor)
-    foot_logits = outputs["foot"]
-    ulcer_logits = outputs["ulcer"]
-    synchronize_if_needed(device)
-    model_ms = (perf_counter() - model_start) * 1000.0
-
-    postprocess_start = perf_counter()
-    foot_prob = torch.sigmoid(foot_logits)[0, 0].detach().cpu().numpy()
-    foot_mask_small = foot_prob > args.foot_threshold
-    foot_area_ratio = float(foot_mask_small.mean())
-    foot_detected, capture_guidance = guidance_from_foot_ratio(
-        foot_area_ratio=foot_area_ratio,
-        min_foot_ratio=args.min_foot_ratio,
-        max_foot_ratio=args.max_foot_ratio,
+    segmentation = run_gated_segmentation(
+        model,
+        image,
+        SegmentationConfig(
+            image_size=args.image_size,
+            foot_threshold=args.foot_threshold,
+            ulcer_threshold=args.ulcer_threshold,
+            min_foot_ratio=args.min_foot_ratio,
+            max_foot_ratio=args.max_foot_ratio,
+            center_tolerance=args.center_tolerance,
+            min_ulcer_ratio=args.min_ulcer_ratio,
+        ),
+        device,
+        output_size=image.size,
     )
-    foot_center_x, foot_center_y = foot_center_from_mask(foot_mask_small)
-    foot_centered, center_guidance = guidance_from_foot_center(
-        center_x=foot_center_x,
-        center_y=foot_center_y,
-        tolerance=args.center_tolerance,
-    )
-    if foot_detected:
-        capture_guidance = (
-            "촬영 거리가 적절합니다."
-            if foot_centered
-            else center_guidance
-        )
-
-    ulcer_enabled = foot_detected and foot_centered
-    ulcer_head_start = perf_counter()
-    if ulcer_enabled:
-        ulcer_prob = torch.sigmoid(ulcer_logits)[0, 0].detach().cpu().numpy()
-        ulcer_mask_small = ulcer_prob > args.ulcer_threshold
-        ulcer_mask = resize_mask(ulcer_mask_small, image.size)
-        ulcer_area_ratio = float(ulcer_mask.mean())
-    else:
-        ulcer_mask = np.zeros(image.size[::-1], dtype=np.uint8)
-        ulcer_area_ratio = 0.0
-    ulcer_head_ms = (perf_counter() - ulcer_head_start) * 1000.0
-    ulcer_detected = bool(ulcer_enabled and ulcer_area_ratio >= args.min_ulcer_ratio)
-
-    original_size = image.size
-    foot_mask = resize_mask(foot_mask_small, original_size)
-    postprocess_ms = (perf_counter() - postprocess_start) * 1000.0
 
     classification_result = classify_image(
         image=image,
         bundle=classification_bundle,
         device=device,
-        enabled=foot_detected and classification_bundle is not None,
+        enabled=segmentation.foot_detected and classification_bundle is not None,
         top_k=args.classification_top_k,
     )
     classification_top_k = tuple(
@@ -316,9 +212,14 @@ def predict_image(
     overlay_path = output_dir / f"{stem}_overlay.png"
     json_path = output_dir / f"{stem}.json"
 
-    save_mask(foot_mask, foot_mask_path)
-    save_mask(ulcer_mask, ulcer_mask_path)
-    render_overlay(image, foot_mask, ulcer_mask, args.overlay_alpha).save(overlay_path)
+    save_mask(segmentation.foot_mask, foot_mask_path)
+    save_mask(segmentation.ulcer_mask, ulcer_mask_path)
+    render_overlay(
+        image,
+        segmentation.foot_mask,
+        segmentation.ulcer_mask,
+        args.overlay_alpha,
+    ).save(overlay_path)
     save_ms = (perf_counter() - save_start) * 1000.0
     total_ms = (perf_counter() - total_start) * 1000.0
     fps = 1000.0 / total_ms if total_ms > 0 else 0.0
@@ -326,27 +227,37 @@ def predict_image(
     result = InferenceResult(
         image_path=str(image_path),
         checkpoint_path=str(args.checkpoint),
-        foot_detected=foot_detected,
-        foot_area_ratio=foot_area_ratio,
-        foot_centered=foot_centered,
-        foot_center_x=round(foot_center_x, 4) if foot_center_x is not None else None,
-        foot_center_y=round(foot_center_y, 4) if foot_center_y is not None else None,
-        foot_center_offset_x=round(foot_center_x - 0.5, 4) if foot_center_x is not None else None,
-        foot_center_offset_y=round(foot_center_y - 0.5, 4) if foot_center_y is not None else None,
-        capture_guidance=capture_guidance,
-        ulcer_enabled=ulcer_enabled,
-        ulcer_detected=ulcer_detected,
-        ulcer_area_ratio=ulcer_area_ratio,
+        foot_detected=segmentation.foot_detected,
+        foot_area_ratio=segmentation.foot_area_ratio,
+        foot_centered=segmentation.foot_centered,
+        foot_center_x=round(segmentation.foot_center_x, 4)
+        if segmentation.foot_center_x is not None
+        else None,
+        foot_center_y=round(segmentation.foot_center_y, 4)
+        if segmentation.foot_center_y is not None
+        else None,
+        foot_center_offset_x=round(segmentation.foot_center_x - 0.5, 4)
+        if segmentation.foot_center_x is not None
+        else None,
+        foot_center_offset_y=round(segmentation.foot_center_y - 0.5, 4)
+        if segmentation.foot_center_y is not None
+        else None,
+        capture_guidance=segmentation.capture_guidance,
+        ulcer_enabled=segmentation.ulcer_enabled,
+        ulcer_detected=segmentation.ulcer_detected,
+        ulcer_area_ratio=segmentation.ulcer_area_ratio,
         foot_threshold=args.foot_threshold,
         ulcer_threshold=args.ulcer_threshold,
         min_foot_ratio=args.min_foot_ratio,
         max_foot_ratio=args.max_foot_ratio,
         center_tolerance=args.center_tolerance,
         min_ulcer_ratio=args.min_ulcer_ratio,
-        preprocess_ms=round(preprocess_ms, 2),
-        model_ms=round(model_ms, 2),
-        ulcer_head_ms=round(ulcer_head_ms, 2),
-        postprocess_ms=round(postprocess_ms, 2),
+        preprocess_ms=round(segmentation.preprocess_ms, 2),
+        backbone_ms=round(segmentation.backbone_ms, 2),
+        foot_head_ms=round(segmentation.foot_head_ms, 2),
+        model_ms=round(segmentation.model_ms, 2),
+        ulcer_head_ms=round(segmentation.ulcer_head_ms, 2),
+        postprocess_ms=round(segmentation.postprocess_ms, 2),
         save_ms=round(save_ms, 2),
         total_ms=round(total_ms, 2),
         fps=round(fps, 2),
@@ -371,6 +282,7 @@ def predict_image(
 
 def main() -> None:
     args = parse_args()
+    args.image_size = resolve_image_size_from_checkpoint(args.checkpoint, args.image_size)
     device = resolve_device(args.device)
     model = load_model(args, device)
     classification_bundle = None
@@ -401,6 +313,8 @@ def main() -> None:
             f"ulcer={result.ulcer_detected} "
             f"ulcer_ratio={result.ulcer_area_ratio:.4f} "
             f"{classification_text}"
+            f"backbone_ms={result.backbone_ms:.2f} "
+            f"foot_head_ms={result.foot_head_ms:.2f} "
             f"model_ms={result.model_ms:.2f} "
             f"ulcer_head_ms={result.ulcer_head_ms:.2f} "
             f"total_ms={result.total_ms:.2f} "

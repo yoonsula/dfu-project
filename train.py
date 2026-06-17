@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from time import perf_counter
@@ -10,15 +9,10 @@ from typing import Any, Iterable
 import torch
 from torch.utils.data import DataLoader
 
-from datasets import DiabeticFootDataset
+from cli.dataset_args import add_dataset_args
+from data.loaders import make_loader
 from losses import binary_segmentation_metrics, segmentation_loss
 from models import DINOv3Backbone, MultiTaskSegModel
-from paths import DEFAULT_BODY_ROOT
-from paths import DEFAULT_CLOSEUP_NEGATIVE_ROOT
-from paths import DEFAULT_FOOT_ROOT
-from paths import DEFAULT_HUMANBODY_ROOT
-from paths import DEFAULT_ULCER_ROOT
-from paths import DEFAULT_WOUND_IMAGE_ROOT
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
 from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
 from paths import TRAIN_OUTPUT_DIR as DEFAULT_TRAIN_OUTPUT_DIR
@@ -28,52 +22,15 @@ from training_log import (
     collect_environment_info,
     count_model_parameters,
 )
+from utils.runtime import autocast_context
+from utils.runtime import make_grad_scaler
+from utils.runtime import resolve_device
+from utils.runtime import seed_everything
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train DINOv3 multi-task DFU segmentation.")
-    parser.add_argument("--foot-root", type=Path, default=DEFAULT_FOOT_ROOT)
-    parser.add_argument("--body-root", type=Path, default=DEFAULT_BODY_ROOT)
-    parser.add_argument(
-        "--no-body",
-        action="store_true",
-        help="Exclude roboflow-body (natural resolution, no zoom augment).",
-    )
-    parser.add_argument("--humanbody-root", type=Path, default=DEFAULT_HUMANBODY_ROOT)
-    parser.add_argument(
-        "--no-humanbody",
-        action="store_true",
-        help="Exclude roboflow-humanbody (foot-only masks + body hard negatives).",
-    )
-    parser.add_argument("--closeup-negative-root", type=Path, default=DEFAULT_CLOSEUP_NEGATIVE_ROOT)
-    parser.add_argument(
-        "--no-closeup-negative",
-        action="store_true",
-        help="Exclude closeup-negative folder and synthetic humanbody close-up duplicates.",
-    )
-    parser.add_argument(
-        "--negative-oversample",
-        type=int,
-        default=4,
-        help="Repeat foot-negative training samples this many times (train only).",
-    )
-    parser.add_argument(
-        "--neg-loss-weight",
-        type=float,
-        default=3.0,
-        help="Per-sample loss multiplier for foot images with empty masks.",
-    )
-    parser.add_argument("--negative-fullbody-scale-min", type=float, default=1.2)
-    parser.add_argument("--negative-fullbody-scale-max", type=float, default=1.8)
-    parser.add_argument("--negative-closeup-scale-min", type=float, default=2.0)
-    parser.add_argument("--negative-closeup-scale-max", type=float, default=3.5)
-    parser.add_argument("--ulcer-root", type=Path, default=DEFAULT_ULCER_ROOT)
-    parser.add_argument("--wound-image-root", type=Path, default=DEFAULT_WOUND_IMAGE_ROOT)
-    parser.add_argument(
-        "--no-wound-image",
-        action="store_true",
-        help="Exclude Wound Image Dataset (wound_main/wound_mask + Nomal negatives).",
-    )
+    add_dataset_args(parser)
     parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
     parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_TRAIN_OUTPUT_DIR)
@@ -130,64 +87,6 @@ def parse_args() -> argparse.Namespace:
         help="Stop if val_dice does not improve for this many epochs. 0 disables early stopping.",
     )
     return parser.parse_args()
-
-
-def resolve_device(name: str) -> torch.device:
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(name)
-
-
-def seed_everything(seed: int) -> None:
-    torch.manual_seed(seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(seed)
-
-
-def make_loader(
-    task: str,
-    split: str,
-    args: argparse.Namespace,
-    shuffle: bool,
-) -> DataLoader:
-    dataset = DiabeticFootDataset(
-        task=task,
-        split=split,
-        foot_root=args.foot_root,
-        body_root=None if args.no_body else args.body_root,
-        humanbody_root=None if args.no_humanbody else args.humanbody_root,
-        closeup_negative_root=None if args.no_closeup_negative else args.closeup_negative_root,
-        ulcer_root=args.ulcer_root,
-        wound_image_root=None if args.no_wound_image else args.wound_image_root,
-        image_size=args.image_size,
-        val_ratio=args.val_ratio,
-        val_negative_ratio=args.val_negative_ratio if task == "foot" else 0.0,
-        seed=args.seed,
-        augment=bool(task == "foot" and split == "train" and args.foot_augment),
-        scale_min=args.foot_scale_min,
-        scale_max=args.foot_scale_max,
-        hflip_prob=args.foot_hflip_prob,
-        negative_oversample=args.negative_oversample if task == "foot" else 1,
-        neg_sample_weight=args.neg_loss_weight if task == "foot" else 1.0,
-        negative_fullbody_scale_min=args.negative_fullbody_scale_min,
-        negative_fullbody_scale_max=args.negative_fullbody_scale_max,
-        negative_closeup_scale_min=args.negative_closeup_scale_min,
-        negative_closeup_scale_max=args.negative_closeup_scale_max,
-        synthetic_closeup_from_humanbody=bool(
-            task == "foot"
-            and not args.no_closeup_negative
-            and not args.no_humanbody
-            and args.no_body
-        ),
-    )
-    return DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=shuffle,
-        num_workers=args.num_workers,
-        pin_memory=bool(args.pin_memory and torch.cuda.is_available()),
-        drop_last=False,
-    )
 
 
 def move_batch(
@@ -359,20 +258,6 @@ def make_lr_scheduler(
             gamma=args.lr_gamma,
         )
     raise ValueError(f"Unsupported lr scheduler: {args.lr_scheduler}")
-
-
-def make_grad_scaler(use_amp: bool) -> Any:
-    if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
-        return torch.amp.GradScaler("cuda", enabled=use_amp)
-    return torch.cuda.amp.GradScaler(enabled=use_amp)
-
-
-def autocast_context(device: torch.device, use_amp: bool) -> Any:
-    if not use_amp:
-        return nullcontext()
-    if hasattr(torch, "amp") and hasattr(torch.amp, "autocast"):
-        return torch.amp.autocast(device_type=device.type, enabled=True)
-    return torch.cuda.amp.autocast(enabled=True)
 
 
 def save_checkpoint(

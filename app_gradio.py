@@ -13,20 +13,17 @@ import torch
 from fastrtc import VideoStreamHandler, WebRTC
 from PIL import Image
 
+from inference.pipeline import SegmentationConfig
+from inference.pipeline import render_overlay
+from inference.pipeline import run_gated_segmentation
 from infer import (
-    foot_center_from_mask,
-    guidance_from_foot_center,
-    guidance_from_foot_ratio,
     load_model,
-    preprocess_image,
-    resize_mask,
-    render_overlay,
-    resolve_device,
-    synchronize_if_needed,
+    resolve_image_size_from_checkpoint,
 )
 from paths import DEFAULT_CHECKPOINT
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
 from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
+from utils.runtime import resolve_device
 UI_REFRESH_SEC = 0.5
 
 
@@ -200,56 +197,31 @@ class RealtimeDFUSegmenter:
         display_image = downscale_for_display(image, self.config.display_max_size)
         display_size = display_image.size
 
-        preprocess_start = perf_counter()
-        input_tensor = preprocess_image(image, self.config.image_size, self.device)
-        synchronize_if_needed(self.device)
-        preprocess_ms = (perf_counter() - preprocess_start) * 1000.0
-
-        model_start = perf_counter()
-        with self._autocast_context():
-            outputs = self.model(input_tensor)
-            foot_logits = outputs["foot"]
-            ulcer_logits = outputs["ulcer"]
-        synchronize_if_needed(self.device)
-        model_ms = (perf_counter() - model_start) * 1000.0
-
-        postprocess_start = perf_counter()
-        foot_prob = torch.sigmoid(foot_logits)[0, 0].detach().float().cpu().numpy()
-        foot_mask_small = foot_prob > self.config.foot_threshold
-        foot_area_ratio = float(foot_mask_small.mean())
-        foot_detected, guidance = guidance_from_foot_ratio(
-            foot_area_ratio,
-            self.config.min_foot_ratio,
-            self.config.max_foot_ratio,
+        segmentation = run_gated_segmentation(
+            self.model,
+            image,
+            SegmentationConfig(
+                image_size=self.config.image_size,
+                foot_threshold=self.config.foot_threshold,
+                ulcer_threshold=self.config.ulcer_threshold,
+                min_foot_ratio=self.config.min_foot_ratio,
+                max_foot_ratio=self.config.max_foot_ratio,
+                center_tolerance=self.config.center_tolerance,
+                min_ulcer_ratio=self.config.min_ulcer_ratio,
+            ),
+            self.device,
+            output_size=display_size,
+            autocast_context=self._autocast_context,
         )
-        foot_center_x, foot_center_y = foot_center_from_mask(foot_mask_small)
-        foot_centered, center_guidance = guidance_from_foot_center(
-            foot_center_x,
-            foot_center_y,
-            self.config.center_tolerance,
-        )
-        if foot_detected:
-            guidance = "촬영 거리가 적절합니다." if foot_centered else center_guidance
-
-        ulcer_enabled = foot_detected and foot_centered
-        ulcer_postprocess_start = perf_counter()
-        if ulcer_enabled:
-            ulcer_prob = torch.sigmoid(ulcer_logits)[0, 0].detach().float().cpu().numpy()
-            ulcer_mask_small = ulcer_prob > self.config.ulcer_threshold
-            ulcer_mask = resize_mask(ulcer_mask_small, display_size)
-            ulcer_area_ratio = float(ulcer_mask.mean())
-        else:
-            ulcer_mask = np.zeros(display_size[::-1], dtype=np.uint8)
-            ulcer_area_ratio = 0.0
-        ulcer_postprocess_ms = (perf_counter() - ulcer_postprocess_start) * 1000.0
-        ulcer_detected = bool(ulcer_enabled and ulcer_area_ratio >= self.config.min_ulcer_ratio)
-
-        foot_mask = resize_mask(foot_mask_small, display_size)
         overlay = np.asarray(
-            render_overlay(display_image, foot_mask, ulcer_mask, self.config.overlay_alpha),
+            render_overlay(
+                display_image,
+                segmentation.foot_mask,
+                segmentation.ulcer_mask,
+                self.config.overlay_alpha,
+            ),
             dtype=np.uint8,
         )
-        postprocess_ms = (perf_counter() - postprocess_start) * 1000.0
         total_ms = (perf_counter() - total_start) * 1000.0
         fps = 1000.0 / total_ms if total_ms > 0 else 0.0
 
@@ -260,23 +232,29 @@ class RealtimeDFUSegmenter:
             "display_max_size": self.config.display_max_size,
             "display_width": display_size[0],
             "display_height": display_size[1],
-            "foot_detected": foot_detected,
-            "foot_area_ratio": round(foot_area_ratio, 4),
-            "foot_centered": foot_centered,
-            "foot_center_x": round(foot_center_x, 4) if foot_center_x is not None else None,
-            "foot_center_y": round(foot_center_y, 4) if foot_center_y is not None else None,
-            "ulcer_enabled": ulcer_enabled,
-            "ulcer_detected": ulcer_detected,
-            "ulcer_area_ratio": round(ulcer_area_ratio, 4),
-            "preprocess_ms": round(preprocess_ms, 2),
-            "model_ms": round(model_ms, 2),
-            "ulcer_postprocess_ms": round(ulcer_postprocess_ms, 2),
-            "postprocess_ms": round(postprocess_ms, 2),
+            "foot_detected": segmentation.foot_detected,
+            "foot_area_ratio": round(segmentation.foot_area_ratio, 4),
+            "foot_centered": segmentation.foot_centered,
+            "foot_center_x": round(segmentation.foot_center_x, 4)
+            if segmentation.foot_center_x is not None
+            else None,
+            "foot_center_y": round(segmentation.foot_center_y, 4)
+            if segmentation.foot_center_y is not None
+            else None,
+            "ulcer_enabled": segmentation.ulcer_enabled,
+            "ulcer_detected": segmentation.ulcer_detected,
+            "ulcer_area_ratio": round(segmentation.ulcer_area_ratio, 4),
+            "preprocess_ms": round(segmentation.preprocess_ms, 2),
+            "backbone_ms": round(segmentation.backbone_ms, 2),
+            "foot_head_ms": round(segmentation.foot_head_ms, 2),
+            "model_ms": round(segmentation.model_ms, 2),
+            "ulcer_head_ms": round(segmentation.ulcer_head_ms, 2),
+            "postprocess_ms": round(segmentation.postprocess_ms, 2),
             "total_ms": round(total_ms, 2),
             "fps": round(fps, 2),
             "webrtc_frames": self._webrtc_frames,
         }
-        return overlay, guidance, metrics
+        return overlay, segmentation.capture_guidance, metrics
 
     def _autocast_context(self):
         if self.use_amp:
@@ -504,17 +482,6 @@ def build_app(
         )
 
     return app
-
-
-def resolve_image_size_from_checkpoint(checkpoint: Path, fallback: int) -> int:
-    if not checkpoint.exists():
-        return fallback
-    try:
-        state = torch.load(checkpoint, map_location="cpu", weights_only=False)
-        train_args = state.get("args", {}) if isinstance(state, dict) else {}
-        return int(train_args.get("image_size", fallback))
-    except Exception:
-        return fallback
 
 
 def main() -> None:

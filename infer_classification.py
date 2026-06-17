@@ -5,7 +5,6 @@ import json
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import perf_counter
-from typing import Iterable
 
 import torch
 import torch.nn.functional as F
@@ -15,8 +14,9 @@ from transformers import AutoImageProcessor, AutoModel
 from models.dfu_classifier import DinoV3LinearClassifier
 from paths import DEFAULT_CLASSIFICATION_CHECKPOINT
 from paths import DINOV3_HF_MODEL_DIR as DEFAULT_DINOV3_HF_MODEL_DIR
-
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+from utils.image_io import iter_images
+from utils.runtime import resolve_device
+from utils.runtime import synchronize_if_needed
 
 
 @dataclass(frozen=True)
@@ -62,17 +62,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--top-k", type=int, default=3)
     return parser.parse_args()
-
-
-def resolve_device(name: str) -> torch.device:
-    if name == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    return torch.device(name)
-
-
-def synchronize_if_needed(device: torch.device) -> None:
-    if device.type == "cuda" and torch.cuda.is_available():
-        torch.cuda.synchronize()
 
 
 def resolve_model_dir(model_dir: str | Path, fallback: Path) -> Path:
@@ -135,21 +124,6 @@ def load_classification_bundle(
         classes=classes,
         checkpoint_path=checkpoint_path,
     )
-
-
-def iter_images(path: Path) -> Iterable[Path]:
-    if path.is_file():
-        if path.suffix.lower() not in IMAGE_EXTENSIONS:
-            raise ValueError(f"Unsupported image extension: {path}")
-        yield path
-        return
-
-    if not path.is_dir():
-        raise FileNotFoundError(f"Input image path not found: {path}")
-
-    for image_path in sorted(path.rglob("*")):
-        if image_path.is_file() and image_path.suffix.lower() in IMAGE_EXTENSIONS:
-            yield image_path
 
 
 @torch.inference_mode()
