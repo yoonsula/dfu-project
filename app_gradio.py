@@ -20,7 +20,6 @@ from infer import (
     load_model,
     resolve_image_size_from_checkpoint,
 )
-from paths import DEFAULT_CHECKPOINT
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
 from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
 from utils.runtime import resolve_device
@@ -29,7 +28,8 @@ UI_REFRESH_SEC = 0.5
 
 @dataclass(frozen=True)
 class RuntimeConfig:
-    checkpoint: Path
+    foot_head_checkpoint: Path
+    ulcer_head_checkpoint: Path
     dinov3_repo: Path
     dinov3_checkpoint: Path
     image_size: int
@@ -51,7 +51,8 @@ class RuntimeConfig:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch DFU segmentation Gradio app (WebRTC).")
-    parser.add_argument("--checkpoint", type=Path, default=DEFAULT_CHECKPOINT)
+    parser.add_argument("--foot-head-checkpoint", type=Path, required=True)
+    parser.add_argument("--ulcer-head-checkpoint", type=Path, required=True)
     parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
     parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
     parser.add_argument(
@@ -121,7 +122,8 @@ class RealtimeDFUSegmenter:
     @staticmethod
     def _to_infer_args(config: RuntimeConfig) -> argparse.Namespace:
         return argparse.Namespace(
-            checkpoint=config.checkpoint,
+            foot_head_checkpoint=config.foot_head_checkpoint,
+            ulcer_head_checkpoint=config.ulcer_head_checkpoint,
             dinov3_repo=config.dinov3_repo,
             dinov3_checkpoint=config.dinov3_checkpoint,
         )
@@ -486,11 +488,12 @@ def build_app(
 
 def main() -> None:
     args = parse_args()
-    image_size = resolve_image_size_from_checkpoint(args.checkpoint, args.image_size)
+    image_size = resolve_image_size_from_checkpoint(args.foot_head_checkpoint, args.image_size)
     if image_size != args.image_size:
-        print(f"Using image_size={image_size} from checkpoint (CLI default was {args.image_size}).")
+        print(f"Using image_size={image_size} from foot head checkpoint (CLI default was {args.image_size}).")
     config = RuntimeConfig(
-        checkpoint=args.checkpoint,
+        foot_head_checkpoint=args.foot_head_checkpoint,
+        ulcer_head_checkpoint=args.ulcer_head_checkpoint,
         dinov3_repo=args.dinov3_repo,
         dinov3_checkpoint=args.dinov3_checkpoint,
         image_size=image_size,

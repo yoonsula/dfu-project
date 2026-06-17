@@ -17,7 +17,7 @@ from inference.pipeline import run_gated_segmentation
 from inference.pipeline import render_overlay
 from infer_classification import ClassificationBundle, classify_image, load_classification_bundle
 from infer_classification import ClassificationResult, ClassScore
-from models import DINOv3Backbone, DFUFeatureClassifierHead, MultiTaskSegModel
+from models import DINOv3Backbone, DFUFeatureClassifierHead, SingleTaskSegModel
 from paths import DEFAULT_CLASSIFICATION_CHECKPOINT
 from paths import INFERENCE_OUTPUT_DIR as DEFAULT_OUTPUT_DIR
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
@@ -81,21 +81,15 @@ class SharedClassificationBundle:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run gated DFU foot/ulcer segmentation inference.")
     parser.add_argument(
-        "--checkpoint",
-        type=Path,
-        default=None,
-        help="Legacy multitask segmentation checkpoint with backbone/foot/ulcer weights.",
-    )
-    parser.add_argument(
         "--foot-head-checkpoint",
         type=Path,
-        default=None,
+        required=True,
         help="Head-only foot segmentation checkpoint trained on shared DINOv3 features.",
     )
     parser.add_argument(
         "--ulcer-head-checkpoint",
         type=Path,
-        default=None,
+        required=True,
         help="Head-only wound/ulcer segmentation checkpoint trained on shared DINOv3 features.",
     )
     parser.add_argument("--image", type=Path, required=True, help="Input image file or directory.")
@@ -106,7 +100,7 @@ def parse_args() -> argparse.Namespace:
         "--image-size",
         type=int,
         default=None,
-        help="Model input resolution. Defaults to checkpoint args.image_size, then 384.",
+        help="Model input resolution. Defaults to foot head checkpoint args.image_size, then 384.",
     )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--foot-threshold", type=float, default=0.5)
@@ -120,7 +114,7 @@ def parse_args() -> argparse.Namespace:
         "--classification-checkpoint",
         type=Path,
         default=DEFAULT_CLASSIFICATION_CHECKPOINT,
-        help="Legacy DFU classification checkpoint with its own HuggingFace DINOv3 backbone.",
+        help="DFU classification checkpoint with its own HuggingFace DINOv3 backbone.",
     )
     parser.add_argument(
         "--shared-classification-checkpoint",
@@ -146,13 +140,13 @@ def parse_args() -> argparse.Namespace:
 def _checkpoint_state_dict(checkpoint: object) -> dict[str, torch.Tensor]:
     if not isinstance(checkpoint, dict):
         raise ValueError("Checkpoint must be a dict-like torch payload.")
-    for key in ("head_state_dict", "state_dict", "model"):
+    for key in ("head_state_dict", "state_dict"):
         value = checkpoint.get(key)
         if isinstance(value, dict):
             return value
     if all(torch.is_tensor(value) for value in checkpoint.values()):
         return checkpoint
-    raise ValueError("Checkpoint does not contain head_state_dict, state_dict, or model weights.")
+    raise ValueError("Checkpoint does not contain head_state_dict or state_dict weights.")
 
 
 def _strip_first_matching_prefix(
@@ -191,33 +185,13 @@ def load_segmentation_head(
         )
 
 
-def load_model(args: argparse.Namespace, device: torch.device) -> MultiTaskSegModel:
-    if args.checkpoint is None and (
-        args.foot_head_checkpoint is None or args.ulcer_head_checkpoint is None
-    ):
-        raise ValueError(
-            "Provide either --checkpoint, or both --foot-head-checkpoint and --ulcer-head-checkpoint."
-        )
-
+def load_model(args: argparse.Namespace, device: torch.device) -> SingleTaskSegModel:
     backbone = DINOv3Backbone(
         repo_dir=args.dinov3_repo,
         checkpoint_path=args.dinov3_checkpoint,
         freeze=True,
     )
-    model = MultiTaskSegModel(backbone=backbone).to(device)
-    if args.checkpoint is not None:
-        if not args.checkpoint.exists():
-            raise FileNotFoundError(f"Checkpoint not found: {args.checkpoint}")
-        checkpoint = torch.load(args.checkpoint, map_location=device, weights_only=False)
-        state_dict = checkpoint["model"] if isinstance(checkpoint, dict) and "model" in checkpoint else checkpoint
-        missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
-        if missing_keys or unexpected_keys:
-            warnings.warn(
-                "Checkpoint loaded with non-strict key mismatch: "
-                f"missing={missing_keys}, unexpected={unexpected_keys}",
-                RuntimeWarning,
-                stacklevel=2,
-            )
+    model = SingleTaskSegModel(backbone=backbone).to(device)
     if args.foot_head_checkpoint is not None:
         load_segmentation_head(
             model.foot_head,
@@ -346,7 +320,7 @@ def save_mask(mask: np.ndarray, path: Path) -> None:
 
 @torch.inference_mode()
 def predict_image(
-    model: MultiTaskSegModel,
+    model: SingleTaskSegModel,
     image_path: Path,
     args: argparse.Namespace,
     device: torch.device,
@@ -418,7 +392,7 @@ def predict_image(
 
     result = InferenceResult(
         image_path=str(image_path),
-        checkpoint_path=str(args.checkpoint or args.foot_head_checkpoint),
+        checkpoint_path=str(args.foot_head_checkpoint),
         foot_detected=segmentation.foot_detected,
         foot_area_ratio=segmentation.foot_area_ratio,
         foot_centered=segmentation.foot_centered,
@@ -474,7 +448,7 @@ def predict_image(
 
 def main() -> None:
     args = parse_args()
-    args.image_size = resolve_image_size_from_checkpoint(args.checkpoint, args.image_size)
+    args.image_size = resolve_image_size_from_checkpoint(args.foot_head_checkpoint, args.image_size)
     device = resolve_device(args.device)
     model = load_model(args, device)
     classification_bundle = None

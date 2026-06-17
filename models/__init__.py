@@ -3,7 +3,7 @@ from .dfu_classifier import DinoV3LinearClassifier
 from .dfu_feature_head import DFUFeatureClassifierHead
 from .fastinst_head import FastInstSegHead
 from .foot_head import FastInstFootHead
-from .multitask_model import MultiTaskSegModel
+from .single_task_model import SingleTaskSegModel
 from .ulcer_head import FastInstUlcerHead
 
 __all__ = [
@@ -13,5 +13,5 @@ __all__ = [
     "FastInstSegHead",
     "FastInstFootHead",
     "FastInstUlcerHead",
-    "MultiTaskSegModel",
+    "SingleTaskSegModel",
 ]

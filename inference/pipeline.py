@@ -10,7 +10,7 @@ import torch
 from PIL import Image
 
 from datasets.diabetic_foot_dataset import IMAGENET_MEAN, IMAGENET_STD
-from models import MultiTaskSegModel
+from models import SingleTaskSegModel
 from utils.runtime import synchronize_if_needed
 
 
@@ -71,7 +71,7 @@ def preprocess_image(image: Image.Image, image_size: int, device: torch.device) 
 
 @torch.inference_mode()
 def forward_segmentation_staged(
-    model: MultiTaskSegModel,
+    model: SingleTaskSegModel,
     input_tensor: torch.Tensor,
     device: torch.device,
     *,
@@ -188,7 +188,7 @@ def render_overlay(
 
 @torch.inference_mode()
 def run_gated_segmentation(
-    model: MultiTaskSegModel,
+    model: SingleTaskSegModel,
     image: Image.Image,
     config: SegmentationConfig,
     device: torch.device,

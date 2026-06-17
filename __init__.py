@@ -1,1 +1,1 @@
-"""DINOv3 multi-task diabetic foot segmentation project."""
+"""DINOv3 diabetic foot segmentation project with shared-backbone task heads."""

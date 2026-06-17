@@ -12,13 +12,13 @@ from torch.utils.data import DataLoader
 from cli.dataset_args import add_dataset_args
 from data.loaders import make_loader
 from losses import binary_segmentation_metrics, segmentation_loss
-from models import DINOv3Backbone, MultiTaskSegModel
+from models import DINOv3Backbone, SingleTaskSegModel
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
 from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
 from paths import TRAIN_OUTPUT_DIR as DEFAULT_TRAIN_OUTPUT_DIR
 from training_log import (
     TrainingLogger,
-    collect_dataset_info,
+    collect_dataset_stats,
     collect_environment_info,
     count_model_parameters,
 )
@@ -29,8 +29,9 @@ from utils.runtime import seed_everything
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Train DINOv3 multi-task DFU segmentation.")
+    parser = argparse.ArgumentParser(description="Train one DFU segmentation head with a frozen DINOv3 backbone.")
     add_dataset_args(parser)
+    parser.add_argument("--task", type=str, choices=("foot", "ulcer"), required=True)
     parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
     parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_TRAIN_OUTPUT_DIR)
@@ -56,28 +57,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-lr", type=float, default=1.0e-6, help="Minimum LR for cosine scheduler.")
     parser.add_argument("--lr-step-size", type=int, default=10, help="StepLR: decay every N epochs.")
     parser.add_argument("--lr-gamma", type=float, default=0.1, help="StepLR: multiply LR by this factor.")
-    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--unfreeze-backbone", action="store_true")
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--pin-memory", action="store_true")
-    parser.add_argument("--foot-augment", action="store_true")
-    parser.add_argument("--foot-scale-min", type=float, default=1.5)
-    parser.add_argument("--foot-scale-max", type=float, default=2.5)
-    parser.add_argument("--foot-hflip-prob", type=float, default=0.5)
-    parser.add_argument("--val-ratio", type=float, default=0.1, help="Foot roboflow positive val ratio.")
-    parser.add_argument(
-        "--val-negative-ratio",
-        type=float,
-        default=0.25,
-        help="Target fraction of negatives in foot val (body/humanbody/closeup negatives included).",
-    )
-    parser.add_argument(
-        "--ulcer-epoch-multiplier",
-        type=int,
-        default=2,
-        help="Repeat ulcer training batches this many times per epoch.",
-    )
     parser.add_argument("--limit-train-batches", type=int, default=None)
     parser.add_argument("--limit-val-batches", type=int, default=None)
     parser.add_argument(
@@ -101,8 +84,29 @@ def move_batch(
     return images, masks, loss_weight.to(device, non_blocking=True)
 
 
+def predict_task_logits(
+    model: SingleTaskSegModel,
+    images: torch.Tensor,
+    task: str,
+) -> torch.Tensor:
+    features = model.encode(images)
+    output_size = tuple(int(value) for value in images.shape[-2:])
+    if task == "foot":
+        return model.predict_foot_logits(features, output_size)
+    if task == "ulcer":
+        return model.predict_ulcer_logits(features, output_size)
+    raise ValueError(f"Unsupported task: {task}")
+
+
+def configure_task_training(model: SingleTaskSegModel, task: str) -> None:
+    for parameter in model.foot_head.parameters():
+        parameter.requires_grad = task == "foot"
+    for parameter in model.ulcer_head.parameters():
+        parameter.requires_grad = task == "ulcer"
+
+
 def train_one_task_batch(
-    model: MultiTaskSegModel,
+    model: SingleTaskSegModel,
     batch: dict,
     task: str,
     optimizer: torch.optim.Optimizer,
@@ -114,8 +118,7 @@ def train_one_task_batch(
     optimizer.zero_grad(set_to_none=True)
 
     with autocast_context(device, use_amp):
-        outputs = model(images)
-        logits = outputs[task]
+        logits = predict_task_logits(model, images, task)
         loss = segmentation_loss(logits, masks, sample_weights=loss_weight)
 
     scaler.scale(loss).backward()
@@ -135,65 +138,45 @@ def _average_metric_batches(metric_batches: list[dict[str, float]]) -> dict[str,
 
 
 def train_epoch(
-    model: MultiTaskSegModel,
-    foot_loader: DataLoader,
-    ulcer_loader: DataLoader,
+    model: SingleTaskSegModel,
+    loader: DataLoader,
+    task: str,
     optimizer: torch.optim.Optimizer,
     scaler: Any,
     device: torch.device,
     use_amp: bool,
     limit_batches: int | None,
-    ulcer_epoch_multiplier: int = 1,
 ) -> dict[str, float]:
     model.train()
-    foot_total = 0.0
-    ulcer_total = 0.0
-    foot_steps = 0
-    ulcer_steps = 0
-    foot_metric_batches: list[dict[str, float]] = []
-    ulcer_metric_batches: list[dict[str, float]] = []
+    total = 0.0
+    steps = 0
+    metric_batches: list[dict[str, float]] = []
 
-    for batch in _limited(foot_loader, limit_batches):
+    for batch in _limited(loader, limit_batches):
         loss, metrics = train_one_task_batch(
-            model, batch, "foot", optimizer, scaler, device, use_amp
+            model, batch, task, optimizer, scaler, device, use_amp
         )
-        foot_total += loss
-        foot_steps += 1
-        foot_metric_batches.append(metrics)
+        total += loss
+        steps += 1
+        metric_batches.append(metrics)
 
-    ulcer_passes = max(1, ulcer_epoch_multiplier)
-    for _ in range(ulcer_passes):
-        for batch in _limited(ulcer_loader, limit_batches):
-            loss, metrics = train_one_task_batch(
-                model, batch, "ulcer", optimizer, scaler, device, use_amp
-            )
-            ulcer_total += loss
-            ulcer_steps += 1
-            ulcer_metric_batches.append(metrics)
-
-    foot_loss = foot_total / max(foot_steps, 1)
-    ulcer_loss = ulcer_total / max(ulcer_steps, 1)
-    foot_metrics = _average_metric_batches(foot_metric_batches)
-    ulcer_metrics = _average_metric_batches(ulcer_metric_batches)
+    loss = total / max(steps, 1)
+    task_metrics = _average_metric_batches(metric_batches)
     return {
-        "foot_loss": foot_loss,
-        "ulcer_loss": ulcer_loss,
-        "train_loss": 0.5 * (foot_loss + ulcer_loss),
-        "foot_train_dice": foot_metrics["dice"],
-        "foot_train_iou": foot_metrics["iou"],
-        "foot_train_accuracy": foot_metrics["accuracy"],
-        "ulcer_train_dice": ulcer_metrics["dice"],
-        "ulcer_train_iou": ulcer_metrics["iou"],
-        "ulcer_train_accuracy": ulcer_metrics["accuracy"],
-        "train_dice": 0.5 * (foot_metrics["dice"] + ulcer_metrics["dice"]),
-        "train_iou": 0.5 * (foot_metrics["iou"] + ulcer_metrics["iou"]),
-        "train_accuracy": 0.5 * (foot_metrics["accuracy"] + ulcer_metrics["accuracy"]),
+        "train_loss": loss,
+        f"{task}_loss": loss,
+        "train_dice": task_metrics["dice"],
+        "train_iou": task_metrics["iou"],
+        "train_accuracy": task_metrics["accuracy"],
+        f"{task}_train_dice": task_metrics["dice"],
+        f"{task}_train_iou": task_metrics["iou"],
+        f"{task}_train_accuracy": task_metrics["accuracy"],
     }
 
 
 @torch.no_grad()
 def validate_task(
-    model: MultiTaskSegModel,
+    model: SingleTaskSegModel,
     loader: DataLoader,
     task: str,
     device: torch.device,
@@ -208,8 +191,7 @@ def validate_task(
 
     for batch in _limited(loader, limit_batches):
         images, masks, loss_weight = move_batch(batch, device)
-        outputs = model(images)
-        logits = outputs[task]
+        logits = predict_task_logits(model, images, task)
         metrics = binary_segmentation_metrics(logits, masks)
         total_loss += float(segmentation_loss(logits, masks, sample_weights=loss_weight).item())
         total_dice += metrics["dice"]
@@ -262,7 +244,7 @@ def make_lr_scheduler(
 
 def save_checkpoint(
     path: Path,
-    model: MultiTaskSegModel,
+    model: SingleTaskSegModel,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     metrics: dict[str, float],
@@ -270,9 +252,12 @@ def save_checkpoint(
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    task_head = model.foot_head if args.task == "foot" else model.ulcer_head
     payload: dict[str, Any] = {
+        "task": args.task,
         "epoch": epoch,
         "model": model.state_dict(),
+        "head_state_dict": task_head.state_dict(),
         "optimizer": optimizer.state_dict(),
         "metrics": metrics,
         "args": vars(args),
@@ -295,6 +280,20 @@ def resolve_output_dir(args: argparse.Namespace) -> Path:
     return output_dir
 
 
+def collect_task_dataset_info(
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+) -> dict[str, Any]:
+    return {
+        "splits": {
+            "train": collect_dataset_stats(train_loader.dataset, train_loader),
+            "val": collect_dataset_stats(val_loader.dataset, val_loader),
+        },
+        "total_train_samples": len(train_loader.dataset),
+        "total_val_samples": len(val_loader.dataset),
+    }
+
+
 def main() -> None:
     args = parse_args()
     args.output_dir = resolve_output_dir(args)
@@ -302,17 +301,16 @@ def main() -> None:
     device = resolve_device(args.device)
     use_amp = bool(args.amp and device.type == "cuda")
 
-    foot_train = make_loader("foot", "train", args, shuffle=True)
-    ulcer_train = make_loader("ulcer", "train", args, shuffle=True)
-    foot_val = make_loader("foot", "val", args, shuffle=False)
-    ulcer_val = make_loader("ulcer", "val", args, shuffle=False)
+    train_loader = make_loader(args.task, "train", args, shuffle=True)
+    val_loader = make_loader(args.task, "val", args, shuffle=False)
 
     backbone = DINOv3Backbone(
         repo_dir=args.dinov3_repo,
         checkpoint_path=args.dinov3_checkpoint,
         freeze=not args.unfreeze_backbone,
     )
-    model = MultiTaskSegModel(backbone=backbone).to(device)
+    model = SingleTaskSegModel(backbone=backbone).to(device)
+    configure_task_training(model, args.task)
 
     trainable_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
@@ -322,10 +320,11 @@ def main() -> None:
     logger = TrainingLogger(args.output_dir)
     logger.write_initial_artifacts(
         args=args,
-        dataset_info=collect_dataset_info(args, foot_train, ulcer_train, foot_val, ulcer_val),
+        dataset_info=collect_task_dataset_info(train_loader, val_loader),
         environment=collect_environment_info(device),
         model_info={
             "model": model.__class__.__name__,
+            "task": args.task,
             "backbone_frozen": not args.unfreeze_backbone,
             **count_model_parameters(model),
         },
@@ -341,21 +340,19 @@ def main() -> None:
         epoch_started = perf_counter()
         train_metrics = train_epoch(
             model,
-            foot_train,
-            ulcer_train,
+            train_loader,
+            args.task,
             optimizer,
             scaler,
             device,
             use_amp,
             args.limit_train_batches,
-            ulcer_epoch_multiplier=args.ulcer_epoch_multiplier,
         )
-        foot_metrics = validate_task(model, foot_val, "foot", device, args.limit_val_batches)
-        ulcer_metrics = validate_task(model, ulcer_val, "ulcer", device, args.limit_val_batches)
-        metrics = {**train_metrics, **foot_metrics, **ulcer_metrics}
-        metrics["val_dice"] = 0.5 * (metrics["foot_val_dice"] + metrics["ulcer_val_dice"])
-        metrics["val_iou"] = 0.5 * (metrics["foot_val_iou"] + metrics["ulcer_val_iou"])
-        metrics["val_accuracy"] = 0.5 * (metrics["foot_val_accuracy"] + metrics["ulcer_val_accuracy"])
+        task_metrics = validate_task(model, val_loader, args.task, device, args.limit_val_batches)
+        metrics = {**train_metrics, **task_metrics}
+        metrics["val_dice"] = metrics[f"{args.task}_val_dice"]
+        metrics["val_iou"] = metrics[f"{args.task}_val_iou"]
+        metrics["val_accuracy"] = metrics[f"{args.task}_val_accuracy"]
         metrics["learning_rate"] = optimizer.param_groups[0]["lr"]
         score = metrics["val_dice"]
         epoch_seconds = perf_counter() - epoch_started

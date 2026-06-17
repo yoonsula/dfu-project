@@ -9,7 +9,7 @@ from .foot_head import FastInstFootHead
 from .ulcer_head import FastInstUlcerHead
 
 
-class MultiTaskSegModel(nn.Module):
+class SingleTaskSegModel(nn.Module):
     def __init__(
         self,
         backbone: nn.Module | None = None,
@@ -71,3 +71,4 @@ class MultiTaskSegModel(nn.Module):
             "foot": self.predict_foot_logits(features, output_size),
             "ulcer": self.predict_ulcer_logits(features, output_size),
         }
+

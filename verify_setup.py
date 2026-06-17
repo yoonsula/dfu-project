@@ -6,7 +6,6 @@ import sys
 from pathlib import Path
 
 from paths import (
-    DEFAULT_CHECKPOINT,
     DEFAULT_CLASSIFICATION_CHECKPOINT,
     DINOV3_CHECKPOINT,
     DINOV3_HF_MODEL_DIR,
@@ -16,7 +15,6 @@ from paths import (
 
 def main() -> int:
     required = [
-        ("Segmentation checkpoint", DEFAULT_CHECKPOINT),
         ("Classification checkpoint", DEFAULT_CLASSIFICATION_CHECKPOINT),
         ("DINOv3 repo (segmentation)", DINOV3_REPO),
         ("DINOv3 backbone weights", DINOV3_CHECKPOINT),
