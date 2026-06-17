@@ -128,6 +128,10 @@ python infer.py \
 - `{name}_foot_mask.png`, `{name}_ulcer_mask.png`, `{name}_overlay.png`
 - `{name}.json` — 타이밍, gate 상태, **분류 결과** 포함
 
+Ulcer head는 기본적으로 탐지된 foot mask의 bbox에 `--ulcer-crop-margin 0.1` 만큼 여유를 둔 feature crop만 사용합니다. Overlay에는 이 crop 영역이 노란 bbox로 표시되고, JSON에는 원본 이미지 좌표의 `ulcer_crop_bbox: [xmin, ymin, xmax, ymax]`가 기록됩니다. 전체 feature map에서 ulcer를 돌리고 싶으면 `--no-ulcer-feature-crop`을 추가하세요.
+
+촬영 거리/중앙 정렬 guide 없이 모든 후속 단계를 계속 실행하려면 `--no-guide`를 추가하세요. 이 옵션은 guide 문구와 guide gate만 끄며, foot mask가 존재하면 ulcer head, feature crop bbox 시각화, DFU classification은 계속 실행됩니다.
+
 분류 비활성화:
 
 ```bash
@@ -148,7 +152,7 @@ Backbone을 freeze하고 task별 환경에서 head만 따로 학습한 경우에
 python infer.py \
   --foot-head-checkpoint output/train/foot_head_v1/best.pt \
   --ulcer-head-checkpoint output/train/wound_head_v1/best.pt \
-  --shared-classification-checkpoint output/train/dfu_head_v1/best.pt \
+  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
   --image /path/to/image_or_dir \
   --image-size 384 \
   --device cuda
@@ -247,34 +251,42 @@ python train.py --task ulcer --image-size 384 --batch-size 64 --amp --device cud
 
 ### 1. DFU classification dataset format
 
-DFU classification 데이터는 ImageFolder 형식을 권장합니다.
+DFU classification 데이터는 `dfu` vs `other`의 binary ImageFolder 형식을 권장합니다. 원본 `DFU Dataset`과 `dfu_partA_20260617`은 아래 스크립트로 하나의 학습 폴더로 재생성합니다.
+
+```bash
+python scripts/prepare_dfu_classification_data.py --overwrite
+```
+
+기본 출력:
 
 ```text
-dfu_root/
+../../03_데이터/dfu_classification_data/
   train/
-    TS6_normal skin/
-    diabetic ulcer/
-    other_injury/
+    dfu/
+    other/
   val/
-    TS6_normal skin/
-    diabetic ulcer/
-    other_injury/
+    dfu/
+    other/
+  test/
+    dfu/
+    other/
 ```
 
-`train/val` 폴더가 없으면 class 폴더만 두고 `--val-ratio`로 자동 분할할 수 있습니다.
+Label mapping:
 
 ```text
-dfu_root/
-  TS6_normal skin/
-  diabetic ulcer/
-  other_injury/
+DFU Dataset/*/Diabetic Foot Ulcer -> dfu
+DFU Dataset/*/Healthy             -> other
+DFU Dataset/*/Wound               -> other
+dfu_partA_20260617/dfu            -> dfu
+dfu_partA_20260617/others         -> other
 ```
 
-CSV도 사용할 수 있습니다. CSV에는 `image_path`/`path`/`image` 중 하나와 `label`/`class`/`class_name` 중 하나가 필요합니다. `split` 컬럼이 있으면 `train`, `val`을 그대로 사용합니다.
+`dfu_partA_20260617`은 파일명 앞의 patient/group id 기준으로 train/val/test에 나눕니다. 생성된 `manifest.csv`에는 원본 경로, target 경로, split, label, group id가 기록됩니다. 디스크 사용량을 줄이고 싶으면 `--mode hardlink`를 사용할 수 있습니다.
 
-### 2. Head-only 학습
+### 2. Segmentation head 학습
 
-`train.py`는 저장된 cache 없이 이미지를 읽고 frozen backbone을 통과시킨 뒤 해당 task head만 학습합니다.
+`train.py`는 저장된 cache 없이 이미지를 읽고 frozen backbone을 통과시킨 뒤 선택한 segmentation head만 학습합니다.
 
 ```bash
 python train.py \
@@ -304,6 +316,53 @@ output/train/wound_head_v1/best.pt
 ```
 
 이 두 checkpoint는 `infer.py`에서 `--foot-head-checkpoint`, `--ulcer-head-checkpoint`로 함께 로드합니다.
+
+### 3. DFU classification head 학습
+
+`train.py --task dfu`는 `dfu_classification_data/`를 읽고, foot/ulcer와 **같은 frozen DINOv3 backbone feature map** 위에서 DFU classification head만 학습합니다. inference에서는 backbone을 한 번만 실행한 뒤 foot, ulcer, dfu head가 같은 feature를 공유합니다.
+
+노트북(`01_classification.ipynb`)에서 성능이 좋았던 설정을 참고해 기본값을 맞춰 두었습니다.
+
+- `--dfu-head-type linear`: notebook과 같이 단순 linear head
+- `--dfu-lr 5e-3`, `--dfu-batch-size 32`, `--epochs 10`
+- `--class-weight none`
+- `--warmup-ratio 0.1` + cosine scheduler
+- `--dfu-best-metric f1`
+- `--image-size 384`: foot/ulcer checkpoint와 동일하게 유지
+
+```bash
+python train.py \
+  --task dfu \
+  --dfu-root ../../03_데이터/dfu_classification_data \
+  --output-dir output/train \
+  --run-name dfu_head_v1 \
+  --image-size 384 \
+  --epochs 10 \
+  --device cuda \
+  --amp
+```
+
+기본 클래스는 `dfu`, `other`입니다. MLP head나 class weight를 쓰고 싶으면 `--dfu-head-type mlp --class-weight balanced`를 추가하세요.
+
+학습 결과:
+
+```text
+output/train/dfu_head_v1/best.pt
+output/train/dfu_head_v1/last.pt
+output/train/dfu_head_v1/train_log.json
+```
+
+저장된 `best.pt`는 `infer.py`의 `--dfu-head-checkpoint`에 바로 사용할 수 있습니다.
+
+```bash
+python infer.py \
+  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
+  --ulcer-head-checkpoint output/train/wound_head_v1/best.pt \
+  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
+  --image /path/to/image_or_dir \
+  --image-size 384 \
+  --device cuda
+```
 
 ## Dataset Acknowledgments
 

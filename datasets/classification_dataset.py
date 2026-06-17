@@ -50,7 +50,7 @@ class ClassificationImageDataset(Dataset):
         seed: int = 42,
         classes: Sequence[str] | None = None,
     ) -> None:
-        if split not in {"train", "val", "validation"}:
+        if split not in {"train", "val", "validation", "test"}:
             raise ValueError(f"Unsupported split: {split}")
         if root is None and csv_path is None:
             raise ValueError("Provide --dfu-root or --dfu-csv for classification data.")
@@ -150,7 +150,12 @@ class ClassificationImageDataset(Dataset):
         if self.csv_path is not None:
             return samples
         assert self.root is not None
-        if (self.root / "train").exists() or (self.root / "val").exists() or (self.root / "validation").exists():
+        if (
+            (self.root / "train").exists()
+            or (self.root / "val").exists()
+            or (self.root / "validation").exists()
+            or (self.root / "test").exists()
+        ):
             return samples
 
         rng = random.Random(self.seed)

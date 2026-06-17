@@ -13,15 +13,22 @@ class DFUFeatureClassifierHead(nn.Module):
         hidden_dim: int = 256,
         num_classes: int = 3,
         dropout: float = 0.2,
+        head_type: str = "linear",
     ) -> None:
         super().__init__()
-        self.net = nn.Sequential(
-            nn.LayerNorm(feature_dim),
-            nn.Linear(feature_dim, hidden_dim),
-            nn.GELU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_dim, num_classes),
-        )
+        self.head_type = head_type
+        if head_type == "linear":
+            self.net = nn.Linear(feature_dim, num_classes)
+        elif head_type == "mlp":
+            self.net = nn.Sequential(
+                nn.LayerNorm(feature_dim),
+                nn.Linear(feature_dim, hidden_dim),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim, num_classes),
+            )
+        else:
+            raise ValueError(f"Unsupported head_type: {head_type}")
 
     def forward(self, features: torch.Tensor) -> torch.Tensor:
         if features.ndim != 4:

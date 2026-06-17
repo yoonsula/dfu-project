@@ -77,3 +77,15 @@ DEFAULT_WOUND_IMAGE_ROOT = _resolve_path(
     "DFU_WOUND_IMAGE_ROOT",
     DATA_ROOT / "Wound Image Dataset",
 )
+DEFAULT_DFU_CLASSIFICATION_SOURCE_ROOT = _resolve_path(
+    "DFU_CLASSIFICATION_SOURCE_ROOT",
+    DATA_ROOT / "DFU Dataset",
+)
+DEFAULT_DFU_PARTA_ROOT = _resolve_path(
+    "DFU_PARTA_ROOT",
+    DATA_ROOT / "dfu_partA_20260617",
+)
+DEFAULT_DFU_CLASSIFICATION_DATA_ROOT = _resolve_path(
+    "DFU_CLASSIFICATION_DATA_ROOT",
+    DATA_ROOT / "dfu_classification_data",
+)

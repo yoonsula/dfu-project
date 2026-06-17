@@ -37,10 +37,13 @@ class RuntimeConfig:
     device_name: str
     foot_threshold: float
     ulcer_threshold: float
+    guide_enabled: bool
     min_foot_ratio: float
     max_foot_ratio: float
     center_tolerance: float
     min_ulcer_ratio: float
+    ulcer_feature_crop: bool
+    ulcer_crop_margin: float
     overlay_alpha: float
     amp: bool
     stream_time_limit: int
@@ -83,10 +86,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--foot-threshold", type=float, default=0.5)
     parser.add_argument("--ulcer-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--no-guide",
+        action="store_true",
+        help="Disable capture guidance and do not let guidance gates block ulcer stages.",
+    )
     parser.add_argument("--min-foot-ratio", type=float, default=0.08)
     parser.add_argument("--max-foot-ratio", type=float, default=0.5)
     parser.add_argument("--center-tolerance", type=float, default=0.25)
     parser.add_argument("--min-ulcer-ratio", type=float, default=0.001)
+    parser.add_argument("--ulcer-crop-margin", type=float, default=0.1)
+    parser.add_argument("--no-ulcer-feature-crop", action="store_true")
     parser.add_argument("--overlay-alpha", type=float, default=0.4)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--server-name", type=str, default="127.0.0.1")
@@ -114,7 +124,11 @@ class RealtimeDFUSegmenter:
         self.model = load_model(self._to_infer_args(config), self.device)
         self.use_amp = bool(config.amp and self.device.type == "cuda")
 
-        self._last_guidance = "이미지 탭: 업로드 후 Run. 실시간 탭: WebRTC Start."
+        self._last_guidance: str | None = (
+            "이미지 탭: 업로드 후 Run. 실시간 탭: WebRTC Start."
+            if config.guide_enabled
+            else None
+        )
         self._last_metrics: dict[str, Any] = {}
         self._webrtc_frames = 0
         self._last_json_serialized: str | None = None
@@ -157,6 +171,8 @@ class RealtimeDFUSegmenter:
     def _result_payload(self) -> dict[str, Any] | None:
         if not self._last_metrics:
             return None
+        if self._last_guidance is None:
+            return dict(self._last_metrics)
         return {"guidance": self._last_guidance, **self._last_metrics}
 
     def _json_output(self, force: bool = False) -> Any:
@@ -193,7 +209,7 @@ class RealtimeDFUSegmenter:
         return self._json_output(force=False)
 
     @torch.inference_mode()
-    def _infer_frame(self, frame: np.ndarray) -> tuple[np.ndarray, str, dict[str, Any]]:
+    def _infer_frame(self, frame: np.ndarray) -> tuple[np.ndarray, str | None, dict[str, Any]]:
         total_start = perf_counter()
         image = Image.fromarray(frame.astype(np.uint8), mode="RGB")
         display_image = downscale_for_display(image, self.config.display_max_size)
@@ -206,10 +222,13 @@ class RealtimeDFUSegmenter:
                 image_size=self.config.image_size,
                 foot_threshold=self.config.foot_threshold,
                 ulcer_threshold=self.config.ulcer_threshold,
+                guide_enabled=self.config.guide_enabled,
                 min_foot_ratio=self.config.min_foot_ratio,
                 max_foot_ratio=self.config.max_foot_ratio,
                 center_tolerance=self.config.center_tolerance,
                 min_ulcer_ratio=self.config.min_ulcer_ratio,
+                ulcer_feature_crop=self.config.ulcer_feature_crop,
+                ulcer_crop_margin=self.config.ulcer_crop_margin,
             ),
             self.device,
             output_size=display_size,
@@ -221,6 +240,7 @@ class RealtimeDFUSegmenter:
                 segmentation.foot_mask,
                 segmentation.ulcer_mask,
                 self.config.overlay_alpha,
+                segmentation.ulcer_crop_bbox,
             ),
             dtype=np.uint8,
         )
@@ -231,6 +251,7 @@ class RealtimeDFUSegmenter:
             "device": str(self.device),
             "transport": "fastrtc",
             "model_image_size": self.config.image_size,
+            "guide_enabled": self.config.guide_enabled,
             "display_max_size": self.config.display_max_size,
             "display_width": display_size[0],
             "display_height": display_size[1],
@@ -246,6 +267,9 @@ class RealtimeDFUSegmenter:
             "ulcer_enabled": segmentation.ulcer_enabled,
             "ulcer_detected": segmentation.ulcer_detected,
             "ulcer_area_ratio": round(segmentation.ulcer_area_ratio, 4),
+            "ulcer_crop_bbox": segmentation.ulcer_crop_bbox,
+            "ulcer_feature_crop": self.config.ulcer_feature_crop,
+            "ulcer_crop_margin": self.config.ulcer_crop_margin,
             "preprocess_ms": round(segmentation.preprocess_ms, 2),
             "backbone_ms": round(segmentation.backbone_ms, 2),
             "foot_head_ms": round(segmentation.foot_head_ms, 2),
@@ -501,10 +525,13 @@ def main() -> None:
         device_name=args.device,
         foot_threshold=args.foot_threshold,
         ulcer_threshold=args.ulcer_threshold,
+        guide_enabled=not args.no_guide,
         min_foot_ratio=args.min_foot_ratio,
         max_foot_ratio=args.max_foot_ratio,
         center_tolerance=args.center_tolerance,
         min_ulcer_ratio=args.min_ulcer_ratio,
+        ulcer_feature_crop=not args.no_ulcer_feature_crop,
+        ulcer_crop_margin=args.ulcer_crop_margin,
         overlay_alpha=args.overlay_alpha,
         amp=args.amp,
         stream_time_limit=args.stream_time_limit,

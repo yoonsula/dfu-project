@@ -40,16 +40,20 @@ class InferenceResult:
     foot_center_y: float | None
     foot_center_offset_x: float | None
     foot_center_offset_y: float | None
-    capture_guidance: str
+    capture_guidance: str | None
+    guide_enabled: bool
     ulcer_enabled: bool
     ulcer_detected: bool
     ulcer_area_ratio: float
+    ulcer_crop_bbox: tuple[int, int, int, int] | None
     foot_threshold: float
     ulcer_threshold: float
     min_foot_ratio: float
     max_foot_ratio: float
     center_tolerance: float
     min_ulcer_ratio: float
+    ulcer_feature_crop: bool
+    ulcer_crop_margin: float
     preprocess_ms: float
     backbone_ms: float
     foot_head_ms: float
@@ -71,7 +75,7 @@ class InferenceResult:
 
 
 @dataclass(frozen=True)
-class SharedClassificationBundle:
+class DFUHeadBundle:
     head: DFUFeatureClassifierHead
     id2label: dict[int, str]
     classes: tuple[str, ...]
@@ -105,10 +109,26 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--foot-threshold", type=float, default=0.5)
     parser.add_argument("--ulcer-threshold", type=float, default=0.5)
+    parser.add_argument(
+        "--no-guide",
+        action="store_true",
+        help="Disable capture guidance and do not let guidance gates block ulcer/classification stages.",
+    )
     parser.add_argument("--min-foot-ratio", type=float, default=0.08)
     parser.add_argument("--max-foot-ratio", type=float, default=0.5)
     parser.add_argument("--center-tolerance", type=float, default=0.25)
     parser.add_argument("--min-ulcer-ratio", type=float, default=0.001)
+    parser.add_argument(
+        "--ulcer-crop-margin",
+        type=float,
+        default=0.15,
+        help="Margin ratio around the detected foot bbox when cropping shared features for ulcer head.",
+    )
+    parser.add_argument(
+        "--no-ulcer-feature-crop",
+        action="store_true",
+        help="Run the ulcer head on the full feature map instead of the detected foot feature crop.",
+    )
     parser.add_argument("--overlay-alpha", type=float, default=0.4)
     parser.add_argument(
         "--classification-checkpoint",
@@ -117,10 +137,10 @@ def parse_args() -> argparse.Namespace:
         help="DFU classification checkpoint with its own HuggingFace DINOv3 backbone.",
     )
     parser.add_argument(
-        "--shared-classification-checkpoint",
+        "--dfu-head-checkpoint",
         type=Path,
         default=None,
-        help="Head-only DFU classification checkpoint that consumes shared DINOv3 feature maps.",
+        help="DFU classification head checkpoint that consumes shared DINOv3 feature maps.",
     )
     parser.add_argument(
         "--classification-model-dir",
@@ -235,15 +255,15 @@ def resolve_image_size_from_checkpoint(
     return DEFAULT_IMAGE_SIZE
 
 
-def load_shared_classification_bundle(
+def load_dfu_head_bundle(
     checkpoint_path: Path,
     device: torch.device,
-) -> SharedClassificationBundle:
+) -> DFUHeadBundle:
     if not checkpoint_path.exists():
-        raise FileNotFoundError(f"Shared classification checkpoint not found: {checkpoint_path}")
+        raise FileNotFoundError(f"DFU head checkpoint not found: {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if not isinstance(checkpoint, dict):
-        raise ValueError(f"Shared classification checkpoint must be a dict: {checkpoint_path}")
+        raise ValueError(f"DFU head checkpoint must be a dict: {checkpoint_path}")
 
     classes = tuple(checkpoint.get("classes", ("TS6_normal skin", "diabetic ulcer", "other_injury")))
     id2label_raw = checkpoint.get("id2label", {index: label for index, label in enumerate(classes)})
@@ -251,11 +271,13 @@ def load_shared_classification_bundle(
     feature_dim = int(checkpoint.get("feature_dim", 384))
     hidden_dim = int(checkpoint.get("hidden_dim", 256))
     dropout = float(checkpoint.get("dropout", 0.2))
+    head_type = str(checkpoint.get("head_type", "mlp"))
     head = DFUFeatureClassifierHead(
         feature_dim=feature_dim,
         hidden_dim=hidden_dim,
         num_classes=len(classes),
         dropout=dropout,
+        head_type=head_type,
     ).to(device)
     state_dict = _strip_first_matching_prefix(
         _checkpoint_state_dict(checkpoint),
@@ -263,7 +285,7 @@ def load_shared_classification_bundle(
     )
     head.load_state_dict(state_dict, strict=True)
     head.eval()
-    return SharedClassificationBundle(
+    return DFUHeadBundle(
         head=head,
         id2label=id2label,
         classes=classes,
@@ -274,7 +296,7 @@ def load_shared_classification_bundle(
 @torch.inference_mode()
 def classify_shared_features(
     features: torch.Tensor,
-    bundle: SharedClassificationBundle | None,
+    bundle: DFUHeadBundle | None,
     *,
     enabled: bool,
     top_k: int,
@@ -325,7 +347,7 @@ def predict_image(
     args: argparse.Namespace,
     device: torch.device,
     classification_bundle: ClassificationBundle | None = None,
-    shared_classification_bundle: SharedClassificationBundle | None = None,
+    dfu_head_bundle: DFUHeadBundle | None = None,
 ) -> InferenceResult:
     total_start = perf_counter()
 
@@ -339,20 +361,23 @@ def predict_image(
             image_size=args.image_size,
             foot_threshold=args.foot_threshold,
             ulcer_threshold=args.ulcer_threshold,
+            guide_enabled=not args.no_guide,
             min_foot_ratio=args.min_foot_ratio,
             max_foot_ratio=args.max_foot_ratio,
             center_tolerance=args.center_tolerance,
             min_ulcer_ratio=args.min_ulcer_ratio,
+            ulcer_feature_crop=not args.no_ulcer_feature_crop,
+            ulcer_crop_margin=args.ulcer_crop_margin,
         ),
         device,
         output_size=image.size,
     )
 
     classification_enabled = segmentation.foot_detected
-    if shared_classification_bundle is not None:
+    if dfu_head_bundle is not None:
         classification_result = classify_shared_features(
             segmentation.features,
-            shared_classification_bundle,
+            dfu_head_bundle,
             enabled=classification_enabled,
             top_k=args.classification_top_k,
         )
@@ -385,6 +410,7 @@ def predict_image(
         segmentation.foot_mask,
         segmentation.ulcer_mask,
         args.overlay_alpha,
+        segmentation.ulcer_crop_bbox,
     ).save(overlay_path)
     save_ms = (perf_counter() - save_start) * 1000.0
     total_ms = (perf_counter() - total_start) * 1000.0
@@ -408,16 +434,20 @@ def predict_image(
         foot_center_offset_y=round(segmentation.foot_center_y - 0.5, 4)
         if segmentation.foot_center_y is not None
         else None,
-        capture_guidance=segmentation.capture_guidance,
+        capture_guidance=None if args.no_guide else segmentation.capture_guidance,
+        guide_enabled=not args.no_guide,
         ulcer_enabled=segmentation.ulcer_enabled,
         ulcer_detected=segmentation.ulcer_detected,
         ulcer_area_ratio=segmentation.ulcer_area_ratio,
+        ulcer_crop_bbox=segmentation.ulcer_crop_bbox,
         foot_threshold=args.foot_threshold,
         ulcer_threshold=args.ulcer_threshold,
         min_foot_ratio=args.min_foot_ratio,
         max_foot_ratio=args.max_foot_ratio,
         center_tolerance=args.center_tolerance,
         min_ulcer_ratio=args.min_ulcer_ratio,
+        ulcer_feature_crop=not args.no_ulcer_feature_crop,
+        ulcer_crop_margin=args.ulcer_crop_margin,
         preprocess_ms=round(segmentation.preprocess_ms, 2),
         backbone_ms=round(segmentation.backbone_ms, 2),
         foot_head_ms=round(segmentation.foot_head_ms, 2),
@@ -452,11 +482,11 @@ def main() -> None:
     device = resolve_device(args.device)
     model = load_model(args, device)
     classification_bundle = None
-    shared_classification_bundle = None
+    dfu_head_bundle = None
     if not args.no_classification:
-        if args.shared_classification_checkpoint is not None:
-            shared_classification_bundle = load_shared_classification_bundle(
-                args.shared_classification_checkpoint,
+        if args.dfu_head_checkpoint is not None:
+            dfu_head_bundle = load_dfu_head_bundle(
+                args.dfu_head_checkpoint,
                 device,
             )
         else:
@@ -476,7 +506,7 @@ def main() -> None:
             args,
             device,
             classification_bundle,
-            shared_classification_bundle,
+            dfu_head_bundle,
         )
         classification_text = (
             f"class={result.classification_predicted_class} "
@@ -484,6 +514,11 @@ def main() -> None:
             f"classification_ms={result.classification_ms:.2f} "
             if result.classification_enabled and result.classification_confidence is not None
             else "class=skipped "
+        )
+        guidance_text = (
+            f"guidance={result.capture_guidance}"
+            if result.capture_guidance is not None
+            else ""
         )
         print(
             f"{image_path}: foot={result.foot_detected} "
@@ -499,7 +534,7 @@ def main() -> None:
             f"ulcer_head_ms={result.ulcer_head_ms:.2f} "
             f"total_ms={result.total_ms:.2f} "
             f"fps={result.fps:.2f} "
-            f"guidance={result.capture_guidance}"
+            f"{guidance_text}"
         )
 
 
