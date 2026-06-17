@@ -18,7 +18,7 @@ python verify_setup.py
 # 3) 통합 inference (발 탐지 → 궤양 → DFU 분류)
 python infer.py \
   --foot-head-checkpoint output/train/foot_20260617_141727/best.pt \
-  --ulcer-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
+  --wound-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
   --image /path/to/image.jpg \
   --image-size 384 \
   --device cuda
@@ -29,7 +29,8 @@ python infer.py \
 ```bash
 python app_gradio.py \
   --foot-head-checkpoint output/train/foot_20260617_141727/best.pt \
-  --ulcer-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
+  --wound-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
+  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
   --image-size 384 \
   --device cuda
 # http://127.0.0.1:7861
@@ -41,25 +42,25 @@ python app_gradio.py \
 Input Image
     │
     ▼
-[1] Foot + Ulcer Segmentation (SingleTaskSegModel)
+[1] Foot + Wound Segmentation (SingleTaskSegModel)
     │   DINOv3 ViT-S/16 + FastInst-style heads
     │
     ├── foot 미탐지 → DFU 분류 스킵
     │
     └── foot 탐지됨
             │
-            ├── [2] Ulcer: foot 중앙 정렬까지 만족 시 활성화
+            ├── [2] Wound: foot 중앙 정렬까지 만족 시 활성화
             │
             └── [3] DFU Classification (DinoV3LinearClassifier)
                     ├── TS6_normal skin
-                    ├── diabetic ulcer
+                    ├── diabetic wound
                     └── other_injury
 ```
 
 | 단계 | 모델 | 게이트 조건 |
 |------|------|-------------|
 | Foot mask | foot head checkpoint | foot area ratio ∈ [0.08, 0.5] |
-| Ulcer mask | ulcer head checkpoint | foot 탐지 + 화면 중앙 ±0.25 |
+| Wound mask | wound head checkpoint | foot 탐지 + 화면 중앙 ±0.25 |
 | DFU 분류 | `checkpoints/dinov3_linear_best_0.001.pt` | **foot 탐지 시** |
 
 ## Bundled Assets
@@ -90,7 +91,7 @@ dfu-project/
 │   ├── backbone.py                     # DINOv3 feature extractor
 │   ├── dfu_classifier.py               # DINOv3 + linear head
 │   ├── fastinst_head.py                 # shared segmentation head block
-│   ├── foot_head.py / ulcer_head.py
+│   ├── foot_head.py / wound_head.py
 │   └── single_task_model.py
 ├── datasets/
 │   ├── catalog.py                       # training data source list
@@ -99,7 +100,7 @@ dfu-project/
 │   └── diabetic_foot_dataset.py
 ├── data/loaders.py                      # DataLoader factory
 ├── cli/dataset_args.py                  # shared dataset CLI flags
-├── inference/pipeline.py                # staged foot → ulcer inference
+├── inference/pipeline.py                # staged foot → wound inference
 ├── utils/                               # runtime / image helpers
 ├── infer.py                            # 통합 inference (seg + classification)
 ├── infer_classification.py             # 분류 단독 inference
@@ -117,7 +118,7 @@ dfu-project/
 ```bash
 python infer.py \
   --foot-head-checkpoint output/train/foot_20260617_141727/best.pt \
-  --ulcer-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
+  --wound-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
   --image /path/to/image_or_dir \
   --image-size 384 \
   --device cuda
@@ -125,12 +126,12 @@ python infer.py \
 
 출력 (`output/inference/`):
 
-- `{name}_foot_mask.png`, `{name}_ulcer_mask.png`, `{name}_overlay.png`
+- `{name}_foot_mask.png`, `{name}_wound_mask.png`, `{name}_overlay.png`
 - `{name}.json` — 타이밍, gate 상태, **분류 결과** 포함
 
-Ulcer head는 기본적으로 탐지된 foot mask의 bbox에 `--ulcer-crop-margin 0.1` 만큼 여유를 둔 feature crop만 사용합니다. Overlay에는 이 crop 영역이 노란 bbox로 표시되고, JSON에는 원본 이미지 좌표의 `ulcer_crop_bbox: [xmin, ymin, xmax, ymax]`가 기록됩니다. 전체 feature map에서 ulcer를 돌리고 싶으면 `--no-ulcer-feature-crop`을 추가하세요.
+Wound head는 기본적으로 탐지된 foot mask의 bbox에 `--wound-crop-margin 0.1` 만큼 여유를 둔 feature crop만 사용합니다. Overlay에는 이 crop 영역이 노란 bbox로 표시되고, JSON에는 원본 이미지 좌표의 `wound_crop_bbox: [xmin, ymin, xmax, ymax]`가 기록됩니다. 전체 feature map에서 wound를 돌리고 싶으면 `--no-wound-feature-crop`을 추가하세요.
 
-촬영 거리/중앙 정렬 guide 없이 모든 후속 단계를 계속 실행하려면 `--no-guide`를 추가하세요. 이 옵션은 guide 문구와 guide gate만 끄며, foot mask가 존재하면 ulcer head, feature crop bbox 시각화, DFU classification은 계속 실행됩니다.
+촬영 거리/중앙 정렬 guide 없이 모든 후속 단계를 계속 실행하려면 `--no-guide`를 추가하세요. 이 옵션은 guide 문구와 guide gate만 끄며, foot mask가 존재하면 wound head, feature crop bbox 시각화, DFU classification은 계속 실행됩니다.
 
 분류 비활성화:
 
@@ -146,12 +147,12 @@ python infer_classification.py --image /path/to/image.jpg
 
 ### Shared backbone + separate head checkpoints
 
-Backbone을 freeze하고 task별 환경에서 head만 따로 학습한 경우에는 foot/ulcer head checkpoint를 함께 지정합니다. 이 경로는 inference에서 DINOv3 backbone을 한 번만 실행한 뒤 같은 feature map을 foot, wound/ulcer, DFU classification head에 공유합니다.
+Backbone을 freeze하고 task별 환경에서 head만 따로 학습한 경우에는 foot/wound head checkpoint를 함께 지정합니다. 이 경로는 inference에서 DINOv3 backbone을 한 번만 실행한 뒤 같은 feature map을 foot, wound, DFU classification head에 공유합니다.
 
 ```bash
 python infer.py \
   --foot-head-checkpoint output/train/foot_head_v1/best.pt \
-  --ulcer-head-checkpoint output/train/wound_head_v1/best.pt \
+  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
   --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
   --image /path/to/image_or_dir \
   --image-size 384 \
@@ -166,8 +167,9 @@ python infer.py \
 pip install -r requirements.txt
 
 python app_gradio.py \
-  --foot-head-checkpoint output/train/foot_20260617_141727/best.pt \
-  --ulcer-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
+  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
+  --wound-head-checkpoint output/train/ulcer_head_v1/best.pt \
+  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
   --display-max-size 512 \
   --device cuda \
   --amp
@@ -175,10 +177,10 @@ python app_gradio.py \
 
 | 탭 | 왼쪽 | 오른쪽 |
 |----|------|--------|
-| **이미지** | Input + Overlay + Run | 결과 JSON |
-| **실시간** | WebRTC 오버레이 | JSON (0.5s 갱신) |
+| **이미지** | Input + Overlay + Run | 결과 JSON (segmentation + classification) |
+| **실시간** | WebRTC 오버레이 | JSON (0.5s 갱신, classification 포함) |
 
-> WebRTC 실시간 파이프라인에 DFU 분류 연동은 별도 작업 예정입니다. 현재 UI는 세그멘테이션(발/궤양) 중심입니다.
+`--dfu-head-checkpoint`를 지정하면 segmentation backbone feature를 공유해 `dfu` / `other` 분류 결과가 JSON에 함께 기록됩니다. `--no-classification`으로 끌 수 있습니다.
 
 ## Training (Optional)
 
@@ -194,7 +196,7 @@ python train.py \
   --foot-augment
 ```
 
-`train.py`는 cache 없이 이미지에서 frozen DINOv3 backbone을 실행한 뒤 선택한 task head만 학습합니다. `--task foot` 또는 `--task ulcer`를 각각 실행해 독립 head checkpoint를 만들 수 있습니다.
+`train.py`는 cache 없이 이미지에서 frozen DINOv3 backbone을 실행한 뒤 선택한 task head만 학습합니다. `--task foot` 또는 `--task wound`를 각각 실행해 독립 head checkpoint를 만들 수 있습니다.
 
 | 데이터 | 기본 경로 |
 |--------|-----------|
@@ -202,7 +204,7 @@ python train.py \
 | Foot (DFU SAM3) | `../../03_데이터/dfu-foot-sam3-filtered/train` |
 | Body hard negatives | `../../03_데이터/roboflow-body` |
 | Human body hard negatives | `../../03_데이터/roboflow-humanbody` |
-| Ulcer (FUSeg) | `../../03_데이터/wound-segmentation/data/Foot Ulcer Segmentation Challenge` |
+| Wound (FUSeg) | `../../03_데이터/wound-segmentation/data/Foot Ulcer Segmentation Challenge` |
 | Wound Image Dataset | `../../03_데이터/Wound Image Dataset` |
 
 ### Dataset Catalog
@@ -210,7 +212,7 @@ python train.py \
 학습 데이터는 `datasets/catalog.py`에서 한눈에 볼 수 있게 관리합니다.
 
 - **Foot detection**: `roboflow-foot`, `dfu-foot-sam3-filtered/train`, `roboflow-body`, `roboflow-humanbody`
-- **Ulcer detection**: `Foot Ulcer Segmentation Challenge`, `Wound Image Dataset`
+- **Wound detection**: `Foot Ulcer Segmentation Challenge`, `Wound Image Dataset`
 
 새 COCO foot dataset을 기본 학습에 추가하려면 `datasets/catalog.py`의 foot source 목록에 한 줄을 추가하면 됩니다. 실험용으로만 추가할 때는 `--foot-root`를 반복해서 넘길 수 있습니다.
 
@@ -237,8 +239,8 @@ python train.py \
 # Foot head
 python train.py --task foot --image-size 384 --batch-size 64 --amp --device cuda
 
-# Ulcer/wound head
-python train.py --task ulcer --image-size 384 --batch-size 64 --amp --device cuda
+# Wound head
+python train.py --task wound --image-size 384 --batch-size 64 --amp --device cuda
 ```
 
 중요한 조건은 task별 환경이 달라도 아래 설정은 같아야 한다는 점입니다.
@@ -299,7 +301,7 @@ python train.py \
   --amp
 
 python train.py \
-  --task ulcer \
+  --task wound \
   --output-dir output/train \
   --run-name wound_head_v1 \
   --epochs 30 \
@@ -315,11 +317,11 @@ output/train/foot_head_v1/best.pt
 output/train/wound_head_v1/best.pt
 ```
 
-이 두 checkpoint는 `infer.py`에서 `--foot-head-checkpoint`, `--ulcer-head-checkpoint`로 함께 로드합니다.
+이 두 checkpoint는 `infer.py`에서 `--foot-head-checkpoint`, `--wound-head-checkpoint`로 함께 로드합니다.
 
 ### 3. DFU classification head 학습
 
-`train.py --task dfu`는 `dfu_classification_data/`를 읽고, foot/ulcer와 **같은 frozen DINOv3 backbone feature map** 위에서 DFU classification head만 학습합니다. inference에서는 backbone을 한 번만 실행한 뒤 foot, ulcer, dfu head가 같은 feature를 공유합니다.
+`train.py --task dfu`는 `dfu_classification_data/`를 읽고, foot/wound와 **같은 frozen DINOv3 backbone feature map** 위에서 DFU classification head만 학습합니다. inference에서는 backbone을 한 번만 실행한 뒤 foot, wound, dfu head가 같은 feature를 공유합니다.
 
 노트북(`01_classification.ipynb`)에서 성능이 좋았던 설정을 참고해 기본값을 맞춰 두었습니다.
 
@@ -328,7 +330,7 @@ output/train/wound_head_v1/best.pt
 - `--class-weight none`
 - `--warmup-ratio 0.1` + cosine scheduler
 - `--dfu-best-metric f1`
-- `--image-size 384`: foot/ulcer checkpoint와 동일하게 유지
+- `--image-size 384`: foot/wound checkpoint와 동일하게 유지
 
 ```bash
 python train.py \
@@ -357,7 +359,7 @@ output/train/dfu_head_v1/train_log.json
 ```bash
 python infer.py \
   --foot-head-checkpoint output/train/foot_head_v1/best.pt \
-  --ulcer-head-checkpoint output/train/wound_head_v1/best.pt \
+  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
   --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
   --image /path/to/image_or_dir \
   --image-size 384 \
@@ -434,7 +436,7 @@ python infer.py \
 ```
 Input Image → DINOv3Backbone (ViT-S/16, 384-dim)
     ├── FastInstFootHead  (num_queries=8)  → foot mask
-    └── FastInstUlcerHead (num_queries=16) → ulcer mask
+    └── FastInstWoundHead (num_queries=16) → wound mask
 ```
 
 ### Classification
@@ -443,12 +445,12 @@ Input Image → DINOv3Backbone (ViT-S/16, 384-dim)
 Input Image → DINOv3 ViT-S/16 (HF, frozen) → CLS token → Linear(384→3)
 ```
 
-클래스: `TS6_normal skin`, `diabetic ulcer`, `other_injury`  
+클래스: `TS6_normal skin`, `diabetic wound`, `other_injury`  
 분류 val accuracy: **95.1%** (checkpoint epoch 10)
 
 ## Inference Gate Logic
 
-**Ulcer** (기존):
+**Wound** (기존):
 
 1. Foot area ratio ∈ [`min_foot_ratio`, `max_foot_ratio`] (기본 0.08 ~ 0.5)
 2. Foot center가 화면 중앙 ± `center_tolerance` (기본 0.25) 이내

@@ -21,7 +21,7 @@ def make_loader(
         foot_roots=foot_roots_for_args(args),
         body_root=args.body_root,
         humanbody_root=args.humanbody_root,
-        ulcer_root=args.ulcer_root,
+        wound_root=args.wound_root,
         wound_image_root=None if args.no_wound_image else args.wound_image_root,
         image_size=args.image_size,
         val_ratio=args.val_ratio,

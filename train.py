@@ -39,7 +39,7 @@ DFU_CLASSES = ("dfu", "other")
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Train one DFU task head with a frozen DINOv3 backbone.")
     add_dataset_args(parser)
-    parser.add_argument("--task", type=str, choices=("foot", "ulcer", "dfu"), required=True)
+    parser.add_argument("--task", type=str, choices=("foot", "wound", "dfu"), required=True)
     parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
     parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_TRAIN_OUTPUT_DIR)
@@ -156,8 +156,8 @@ def predict_task_logits(
     output_size = tuple(int(value) for value in images.shape[-2:])
     if task == "foot":
         return model.predict_foot_logits(features, output_size)
-    if task == "ulcer":
-        return model.predict_ulcer_logits(features, output_size)
+    if task == "wound":
+        return model.predict_wound_logits(features, output_size)
     raise ValueError(f"Unsupported task: {task}")
 
 
@@ -173,8 +173,8 @@ def predict_dfu_logits(
 def configure_task_training(model: SingleTaskSegModel, task: str) -> None:
     for parameter in model.foot_head.parameters():
         parameter.requires_grad = task == "foot"
-    for parameter in model.ulcer_head.parameters():
-        parameter.requires_grad = task == "ulcer"
+    for parameter in model.wound_head.parameters():
+        parameter.requires_grad = task == "wound"
 
 
 def train_one_task_batch(
@@ -458,7 +458,7 @@ def save_checkpoint(
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    task_head = model.foot_head if args.task == "foot" else model.ulcer_head
+    task_head = model.foot_head if args.task == "foot" else model.wound_head
     payload: dict[str, Any] = {
         "task": args.task,
         "epoch": epoch,
@@ -622,8 +622,8 @@ def collect_dfu_dataset_info(
 def train_dfu_head(args: argparse.Namespace, device: torch.device, use_amp: bool) -> None:
     if args.image_size != 384:
         print(
-            f"Warning: --image-size {args.image_size} differs from the shared foot/ulcer pipeline default (384). "
-            "Use the same image size across foot, ulcer, and dfu heads at inference."
+            f"Warning: --image-size {args.image_size} differs from the shared foot/wound pipeline default (384). "
+            "Use the same image size across foot, wound, and dfu heads at inference."
         )
 
     train_loader = make_classification_loader("train", args, shuffle=True)

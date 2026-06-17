@@ -14,9 +14,11 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 
-def _resolve_path(env_key: str, default: Path) -> Path:
+def _resolve_path(env_key: str, default: Path, fallback_env_key: str | None = None) -> Path:
     """Resolve env path; relative values are interpreted from PROJECT_ROOT."""
     raw = os.environ.get(env_key)
+    if raw is None and fallback_env_key is not None:
+        raw = os.environ.get(fallback_env_key)
     if raw is None:
         return default.resolve()
     path = Path(raw)
@@ -69,9 +71,10 @@ DEFAULT_DFU_FOOT_ROOT = _resolve_path(
 )
 DEFAULT_BODY_ROOT = _resolve_path("DFU_BODY_ROOT", DATA_ROOT / "roboflow-body")
 DEFAULT_HUMANBODY_ROOT = _resolve_path("DFU_HUMANBODY_ROOT", DATA_ROOT / "roboflow-humanbody")
-DEFAULT_ULCER_ROOT = _resolve_path(
-    "DFU_ULCER_ROOT",
+DEFAULT_WOUND_ROOT = _resolve_path(
+    "DFU_WOUND_ROOT",
     DATA_ROOT / "wound-segmentation" / "data" / "Foot Ulcer Segmentation Challenge",
+    fallback_env_key="DFU_ULCER_ROOT",
 )
 DEFAULT_WOUND_IMAGE_ROOT = _resolve_path(
     "DFU_WOUND_IMAGE_ROOT",

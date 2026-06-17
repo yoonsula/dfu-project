@@ -12,14 +12,14 @@ from torch.utils.data import Dataset
 from datasets.catalog import default_foot_roots
 from datasets.catalog import foot_extra_coco_sources
 from datasets.catalog import foot_primary_sources
-from datasets.catalog import ulcer_sources
+from datasets.catalog import wound_sources
 from datasets.samples import SegmentationSample
 from datasets.source_loaders import load_coco_samples
 from datasets.source_loaders import load_fuseg_samples
 from datasets.source_loaders import load_wound_image_samples
 from paths import DEFAULT_BODY_ROOT
 from paths import DEFAULT_HUMANBODY_ROOT
-from paths import DEFAULT_ULCER_ROOT
+from paths import DEFAULT_WOUND_ROOT
 from paths import DEFAULT_WOUND_IMAGE_ROOT
 IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
@@ -32,7 +32,7 @@ def _resampling(name: str) -> int:
 
 
 class DiabeticFootDataset(Dataset):
-    """Binary segmentation dataset for foot or ulcer masks."""
+    """Binary segmentation dataset for foot or wound masks."""
 
     def __init__(
         self,
@@ -41,7 +41,7 @@ class DiabeticFootDataset(Dataset):
         foot_roots: str | Path | Sequence[str | Path] | None = None,
         body_root: str | Path | None = DEFAULT_BODY_ROOT,
         humanbody_root: str | Path | None = DEFAULT_HUMANBODY_ROOT,
-        ulcer_root: str | Path = DEFAULT_ULCER_ROOT,
+        wound_root: str | Path = DEFAULT_WOUND_ROOT,
         wound_image_root: str | Path | None = DEFAULT_WOUND_IMAGE_ROOT,
         image_size: int = 768,
         val_ratio: float = 0.1,
@@ -54,7 +54,7 @@ class DiabeticFootDataset(Dataset):
         negative_oversample: int = 1,
         neg_sample_weight: float = 1.0,
     ) -> None:
-        if task not in {"foot", "ulcer"}:
+        if task not in {"foot", "wound"}:
             raise ValueError(f"Unsupported task: {task}")
         if split not in {"train", "val", "validation"}:
             raise ValueError(f"Unsupported split: {split}")
@@ -64,7 +64,7 @@ class DiabeticFootDataset(Dataset):
         self.foot_roots = default_foot_roots() if foot_roots is None else self._normalize_foot_roots(foot_roots)
         self.body_root = Path(body_root) if body_root is not None else None
         self.humanbody_root = Path(humanbody_root) if humanbody_root is not None else None
-        self.ulcer_root = Path(ulcer_root)
+        self.wound_root = Path(wound_root)
         self.wound_image_root = Path(wound_image_root) if wound_image_root is not None else None
         self.image_size = int(image_size)
         self.val_ratio = float(val_ratio)
@@ -93,7 +93,7 @@ class DiabeticFootDataset(Dataset):
     def _load_samples(self) -> list[SegmentationSample]:
         if self.task == "foot":
             return self._load_foot_samples()
-        return self._load_ulcer_samples()
+        return self._load_wound_samples()
 
     def _load_foot_samples(self) -> list[SegmentationSample]:
         train_samples, val_samples = self._split_foot_train_val()
@@ -203,9 +203,9 @@ class DiabeticFootDataset(Dataset):
         negatives = [sample for sample in samples if sample.is_negative]
         return positives + negatives * self.negative_oversample
 
-    def _load_ulcer_samples(self) -> list[SegmentationSample]:
-        fuseg_source, wound_source = ulcer_sources(
-            ulcer_root=self.ulcer_root,
+    def _load_wound_samples(self) -> list[SegmentationSample]:
+        fuseg_source, wound_source = wound_sources(
+            wound_root=self.wound_root,
             wound_image_root=self.wound_image_root,
         )
         samples = load_fuseg_samples(fuseg_source.root, self.split)

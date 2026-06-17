@@ -7,7 +7,7 @@ from paths import DEFAULT_BODY_ROOT
 from paths import DEFAULT_DFU_FOOT_ROOT
 from paths import DEFAULT_FOOT_ROOT
 from paths import DEFAULT_HUMANBODY_ROOT
-from paths import DEFAULT_ULCER_ROOT
+from paths import DEFAULT_WOUND_ROOT
 from paths import DEFAULT_WOUND_IMAGE_ROOT
 
 BODY_FOOT_CATEGORY_IDS = {1}
@@ -89,12 +89,12 @@ def foot_extra_coco_sources(
     return sources
 
 
-def ulcer_sources(
+def wound_sources(
     *,
-    ulcer_root: Path = DEFAULT_ULCER_ROOT,
+    wound_root: Path = DEFAULT_WOUND_ROOT,
     wound_image_root: Path | None = DEFAULT_WOUND_IMAGE_ROOT,
 ) -> tuple[FusegSource, WoundImageSource | None]:
-    fuseg = FusegSource(name="fuseg", root=ulcer_root)
+    fuseg = FusegSource(name="fuseg", root=wound_root)
     wound = WoundImageSource(name="wound-image", root=wound_image_root) if wound_image_root else None
     return fuseg, wound
 
@@ -108,5 +108,5 @@ __all__ = [
     "default_foot_roots",
     "foot_primary_sources",
     "foot_extra_coco_sources",
-    "ulcer_sources",
+    "wound_sources",
 ]

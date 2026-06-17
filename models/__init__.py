@@ -4,7 +4,7 @@ from .dfu_feature_head import DFUFeatureClassifierHead
 from .fastinst_head import FastInstSegHead
 from .foot_head import FastInstFootHead
 from .single_task_model import SingleTaskSegModel
-from .ulcer_head import FastInstUlcerHead
+from .wound_head import FastInstWoundHead
 
 __all__ = [
     "DINOv3Backbone",
@@ -12,6 +12,6 @@ __all__ = [
     "DFUFeatureClassifierHead",
     "FastInstSegHead",
     "FastInstFootHead",
-    "FastInstUlcerHead",
+    "FastInstWoundHead",
     "SingleTaskSegModel",
 ]

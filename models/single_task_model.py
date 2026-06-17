@@ -6,7 +6,7 @@ import torch.nn.functional as F
 
 from .backbone import DINOv3Backbone
 from .foot_head import FastInstFootHead
-from .ulcer_head import FastInstUlcerHead
+from .wound_head import FastInstWoundHead
 
 
 class SingleTaskSegModel(nn.Module):
@@ -16,7 +16,7 @@ class SingleTaskSegModel(nn.Module):
         feature_dim: int = 384,
         hidden_dim: int = 256,
         foot_num_queries: int = 8,
-        ulcer_num_queries: int = 16,
+        wound_num_queries: int = 16,
     ) -> None:
         super().__init__()
         self.backbone = backbone or DINOv3Backbone(feature_dim=feature_dim)
@@ -25,10 +25,10 @@ class SingleTaskSegModel(nn.Module):
             hidden_dim=hidden_dim,
             num_queries=foot_num_queries,
         )
-        self.ulcer_head = FastInstUlcerHead(
+        self.wound_head = FastInstWoundHead(
             feature_dim=feature_dim,
             hidden_dim=hidden_dim,
-            num_queries=ulcer_num_queries,
+            num_queries=wound_num_queries,
         )
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
@@ -49,26 +49,25 @@ class SingleTaskSegModel(nn.Module):
             )
         return foot_logits
 
-    def predict_ulcer_logits(
+    def predict_wound_logits(
         self,
         features: torch.Tensor,
         output_size: tuple[int, int] | None = None,
     ) -> torch.Tensor:
-        ulcer_logits = self.ulcer_head(features)
+        wound_logits = self.wound_head(features)
         if output_size is not None:
-            ulcer_logits = F.interpolate(
-                ulcer_logits,
+            wound_logits = F.interpolate(
+                wound_logits,
                 size=output_size,
                 mode="bilinear",
                 align_corners=False,
             )
-        return ulcer_logits
+        return wound_logits
 
     def forward(self, x: torch.Tensor) -> dict[str, torch.Tensor]:
         output_size = x.shape[-2:]
         features = self.encode(x)
         return {
             "foot": self.predict_foot_logits(features, output_size),
-            "ulcer": self.predict_ulcer_logits(features, output_size),
+            "wound": self.predict_wound_logits(features, output_size),
         }
-

@@ -6,7 +6,7 @@ from pathlib import Path
 from datasets.catalog import default_foot_roots
 from paths import DEFAULT_BODY_ROOT
 from paths import DEFAULT_HUMANBODY_ROOT
-from paths import DEFAULT_ULCER_ROOT
+from paths import DEFAULT_WOUND_ROOT
 from paths import DEFAULT_WOUND_IMAGE_ROOT
 
 
@@ -31,7 +31,7 @@ def add_dataset_args(parser: argparse.ArgumentParser) -> None:
         default=3.0,
         help="Per-sample loss multiplier for foot images with empty masks.",
     )
-    parser.add_argument("--ulcer-root", type=Path, default=DEFAULT_ULCER_ROOT)
+    parser.add_argument("--wound-root", type=Path, default=DEFAULT_WOUND_ROOT)
     parser.add_argument("--wound-image-root", type=Path, default=DEFAULT_WOUND_IMAGE_ROOT)
     parser.add_argument(
         "--no-wound-image",

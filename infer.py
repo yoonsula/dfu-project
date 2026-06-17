@@ -42,29 +42,29 @@ class InferenceResult:
     foot_center_offset_y: float | None
     capture_guidance: str | None
     guide_enabled: bool
-    ulcer_enabled: bool
-    ulcer_detected: bool
-    ulcer_area_ratio: float
-    ulcer_crop_bbox: tuple[int, int, int, int] | None
+    wound_enabled: bool
+    wound_detected: bool
+    wound_area_ratio: float
+    wound_crop_bbox: tuple[int, int, int, int] | None
     foot_threshold: float
-    ulcer_threshold: float
+    wound_threshold: float
     min_foot_ratio: float
     max_foot_ratio: float
     center_tolerance: float
-    min_ulcer_ratio: float
-    ulcer_feature_crop: bool
-    ulcer_crop_margin: float
+    min_wound_ratio: float
+    wound_feature_crop: bool
+    wound_crop_margin: float
     preprocess_ms: float
     backbone_ms: float
     foot_head_ms: float
     model_ms: float
-    ulcer_head_ms: float
+    wound_head_ms: float
     postprocess_ms: float
     save_ms: float
     total_ms: float
     fps: float
     foot_mask_path: str
-    ulcer_mask_path: str
+    wound_mask_path: str
     overlay_path: str
     classification_enabled: bool
     classification_predicted_class: str | None
@@ -83,7 +83,7 @@ class DFUHeadBundle:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run gated DFU foot/ulcer segmentation inference.")
+    parser = argparse.ArgumentParser(description="Run gated DFU foot/wound segmentation inference.")
     parser.add_argument(
         "--foot-head-checkpoint",
         type=Path,
@@ -91,10 +91,10 @@ def parse_args() -> argparse.Namespace:
         help="Head-only foot segmentation checkpoint trained on shared DINOv3 features.",
     )
     parser.add_argument(
-        "--ulcer-head-checkpoint",
+        "--wound-head-checkpoint",
         type=Path,
         required=True,
-        help="Head-only wound/ulcer segmentation checkpoint trained on shared DINOv3 features.",
+        help="Head-only wound segmentation checkpoint trained on shared DINOv3 features.",
     )
     parser.add_argument("--image", type=Path, required=True, help="Input image file or directory.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -108,26 +108,26 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--foot-threshold", type=float, default=0.5)
-    parser.add_argument("--ulcer-threshold", type=float, default=0.5)
+    parser.add_argument("--wound-threshold", type=float, default=0.5)
     parser.add_argument(
         "--no-guide",
         action="store_true",
-        help="Disable capture guidance and do not let guidance gates block ulcer/classification stages.",
+        help="Disable capture guidance and do not let guidance gates block wound/classification stages.",
     )
     parser.add_argument("--min-foot-ratio", type=float, default=0.08)
     parser.add_argument("--max-foot-ratio", type=float, default=0.5)
     parser.add_argument("--center-tolerance", type=float, default=0.25)
-    parser.add_argument("--min-ulcer-ratio", type=float, default=0.001)
+    parser.add_argument("--min-wound-ratio", type=float, default=0.001)
     parser.add_argument(
-        "--ulcer-crop-margin",
+        "--wound-crop-margin",
         type=float,
         default=0.15,
-        help="Margin ratio around the detected foot bbox when cropping shared features for ulcer head.",
+        help="Margin ratio around the detected foot bbox when cropping shared features for wound head.",
     )
     parser.add_argument(
-        "--no-ulcer-feature-crop",
+        "--no-wound-feature-crop",
         action="store_true",
-        help="Run the ulcer head on the full feature map instead of the detected foot feature crop.",
+        help="Run the wound head on the full feature map instead of the detected foot feature crop.",
     )
     parser.add_argument("--overlay-alpha", type=float, default=0.4)
     parser.add_argument(
@@ -219,11 +219,11 @@ def load_model(args: argparse.Namespace, device: torch.device) -> SingleTaskSegM
             prefixes=("foot_head.", "head."),
             device=device,
         )
-    if args.ulcer_head_checkpoint is not None:
+    if args.wound_head_checkpoint is not None:
         load_segmentation_head(
-            model.ulcer_head,
-            args.ulcer_head_checkpoint,
-            prefixes=("ulcer_head.", "wound_head.", "head."),
+            model.wound_head,
+            args.wound_head_checkpoint,
+            prefixes=("wound_head.", "ulcer_head.", "head."),
             device=device,
         )
     model.eval()
@@ -265,7 +265,7 @@ def load_dfu_head_bundle(
     if not isinstance(checkpoint, dict):
         raise ValueError(f"DFU head checkpoint must be a dict: {checkpoint_path}")
 
-    classes = tuple(checkpoint.get("classes", ("TS6_normal skin", "diabetic ulcer", "other_injury")))
+    classes = tuple(checkpoint.get("classes", ("TS6_normal skin", "diabetic wound", "other_injury")))
     id2label_raw = checkpoint.get("id2label", {index: label for index, label in enumerate(classes)})
     id2label = {int(key): str(value) for key, value in id2label_raw.items()}
     feature_dim = int(checkpoint.get("feature_dim", 384))
@@ -360,14 +360,14 @@ def predict_image(
         SegmentationConfig(
             image_size=args.image_size,
             foot_threshold=args.foot_threshold,
-            ulcer_threshold=args.ulcer_threshold,
+            wound_threshold=args.wound_threshold,
             guide_enabled=not args.no_guide,
             min_foot_ratio=args.min_foot_ratio,
             max_foot_ratio=args.max_foot_ratio,
             center_tolerance=args.center_tolerance,
-            min_ulcer_ratio=args.min_ulcer_ratio,
-            ulcer_feature_crop=not args.no_ulcer_feature_crop,
-            ulcer_crop_margin=args.ulcer_crop_margin,
+            min_wound_ratio=args.min_wound_ratio,
+            wound_feature_crop=not args.no_wound_feature_crop,
+            wound_crop_margin=args.wound_crop_margin,
         ),
         device,
         output_size=image.size,
@@ -399,18 +399,18 @@ def predict_image(
     output_dir.mkdir(parents=True, exist_ok=True)
     stem = image_path.stem
     foot_mask_path = output_dir / f"{stem}_foot_mask.png"
-    ulcer_mask_path = output_dir / f"{stem}_ulcer_mask.png"
+    wound_mask_path = output_dir / f"{stem}_wound_mask.png"
     overlay_path = output_dir / f"{stem}_overlay.png"
     json_path = output_dir / f"{stem}.json"
 
     save_mask(segmentation.foot_mask, foot_mask_path)
-    save_mask(segmentation.ulcer_mask, ulcer_mask_path)
+    save_mask(segmentation.wound_mask, wound_mask_path)
     render_overlay(
         image,
         segmentation.foot_mask,
-        segmentation.ulcer_mask,
+        segmentation.wound_mask,
         args.overlay_alpha,
-        segmentation.ulcer_crop_bbox,
+        segmentation.wound_crop_bbox,
     ).save(overlay_path)
     save_ms = (perf_counter() - save_start) * 1000.0
     total_ms = (perf_counter() - total_start) * 1000.0
@@ -436,29 +436,29 @@ def predict_image(
         else None,
         capture_guidance=None if args.no_guide else segmentation.capture_guidance,
         guide_enabled=not args.no_guide,
-        ulcer_enabled=segmentation.ulcer_enabled,
-        ulcer_detected=segmentation.ulcer_detected,
-        ulcer_area_ratio=segmentation.ulcer_area_ratio,
-        ulcer_crop_bbox=segmentation.ulcer_crop_bbox,
+        wound_enabled=segmentation.wound_enabled,
+        wound_detected=segmentation.wound_detected,
+        wound_area_ratio=segmentation.wound_area_ratio,
+        wound_crop_bbox=segmentation.wound_crop_bbox,
         foot_threshold=args.foot_threshold,
-        ulcer_threshold=args.ulcer_threshold,
+        wound_threshold=args.wound_threshold,
         min_foot_ratio=args.min_foot_ratio,
         max_foot_ratio=args.max_foot_ratio,
         center_tolerance=args.center_tolerance,
-        min_ulcer_ratio=args.min_ulcer_ratio,
-        ulcer_feature_crop=not args.no_ulcer_feature_crop,
-        ulcer_crop_margin=args.ulcer_crop_margin,
+        min_wound_ratio=args.min_wound_ratio,
+        wound_feature_crop=not args.no_wound_feature_crop,
+        wound_crop_margin=args.wound_crop_margin,
         preprocess_ms=round(segmentation.preprocess_ms, 2),
         backbone_ms=round(segmentation.backbone_ms, 2),
         foot_head_ms=round(segmentation.foot_head_ms, 2),
         model_ms=round(segmentation.model_ms, 2),
-        ulcer_head_ms=round(segmentation.ulcer_head_ms, 2),
+        wound_head_ms=round(segmentation.wound_head_ms, 2),
         postprocess_ms=round(segmentation.postprocess_ms, 2),
         save_ms=round(save_ms, 2),
         total_ms=round(total_ms, 2),
         fps=round(fps, 2),
         foot_mask_path=str(foot_mask_path),
-        ulcer_mask_path=str(ulcer_mask_path),
+        wound_mask_path=str(wound_mask_path),
         overlay_path=str(overlay_path),
         classification_enabled=classification_result.enabled,
         classification_predicted_class=classification_result.predicted_class,
@@ -524,14 +524,14 @@ def main() -> None:
             f"{image_path}: foot={result.foot_detected} "
             f"foot_ratio={result.foot_area_ratio:.4f} "
             f"foot_centered={result.foot_centered} "
-            f"ulcer_enabled={result.ulcer_enabled} "
-            f"ulcer={result.ulcer_detected} "
-            f"ulcer_ratio={result.ulcer_area_ratio:.4f} "
+            f"wound_enabled={result.wound_enabled} "
+            f"wound={result.wound_detected} "
+            f"wound_ratio={result.wound_area_ratio:.4f} "
             f"{classification_text}"
             f"backbone_ms={result.backbone_ms:.2f} "
             f"foot_head_ms={result.foot_head_ms:.2f} "
             f"model_ms={result.model_ms:.2f} "
-            f"ulcer_head_ms={result.ulcer_head_ms:.2f} "
+            f"wound_head_ms={result.wound_head_ms:.2f} "
             f"total_ms={result.total_ms:.2f} "
             f"fps={result.fps:.2f} "
             f"{guidance_text}"

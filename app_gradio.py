@@ -17,6 +17,8 @@ from inference.pipeline import SegmentationConfig
 from inference.pipeline import render_overlay
 from inference.pipeline import run_gated_segmentation
 from infer import (
+    classify_shared_features,
+    load_dfu_head_bundle,
     load_model,
     resolve_image_size_from_checkpoint,
 )
@@ -29,33 +31,35 @@ UI_REFRESH_SEC = 0.5
 @dataclass(frozen=True)
 class RuntimeConfig:
     foot_head_checkpoint: Path
-    ulcer_head_checkpoint: Path
+    wound_head_checkpoint: Path
     dinov3_repo: Path
     dinov3_checkpoint: Path
     image_size: int
     display_max_size: int
     device_name: str
     foot_threshold: float
-    ulcer_threshold: float
+    wound_threshold: float
     guide_enabled: bool
     min_foot_ratio: float
     max_foot_ratio: float
     center_tolerance: float
-    min_ulcer_ratio: float
-    ulcer_feature_crop: bool
-    ulcer_crop_margin: float
+    min_wound_ratio: float
+    wound_feature_crop: bool
+    wound_crop_margin: float
     overlay_alpha: float
     amp: bool
     stream_time_limit: int
     stream_skip_frames: bool
     panel_width: int
     panel_height: int
+    dfu_head_checkpoint: Path | None
+    classification_top_k: int
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch DFU segmentation Gradio app (WebRTC).")
     parser.add_argument("--foot-head-checkpoint", type=Path, required=True)
-    parser.add_argument("--ulcer-head-checkpoint", type=Path, required=True)
+    parser.add_argument("--wound-head-checkpoint", type=Path, required=True)
     parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
     parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
     parser.add_argument(
@@ -85,19 +89,31 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--foot-threshold", type=float, default=0.5)
-    parser.add_argument("--ulcer-threshold", type=float, default=0.5)
+    parser.add_argument("--wound-threshold", type=float, default=0.5)
     parser.add_argument(
         "--no-guide",
         action="store_true",
-        help="Disable capture guidance and do not let guidance gates block ulcer stages.",
+        help="Disable capture guidance and do not let guidance gates block wound stages.",
     )
     parser.add_argument("--min-foot-ratio", type=float, default=0.08)
     parser.add_argument("--max-foot-ratio", type=float, default=0.5)
     parser.add_argument("--center-tolerance", type=float, default=0.25)
-    parser.add_argument("--min-ulcer-ratio", type=float, default=0.001)
-    parser.add_argument("--ulcer-crop-margin", type=float, default=0.1)
-    parser.add_argument("--no-ulcer-feature-crop", action="store_true")
+    parser.add_argument("--min-wound-ratio", type=float, default=0.001)
+    parser.add_argument("--wound-crop-margin", type=float, default=0.1)
+    parser.add_argument("--no-wound-feature-crop", action="store_true")
     parser.add_argument("--overlay-alpha", type=float, default=0.4)
+    parser.add_argument(
+        "--dfu-head-checkpoint",
+        type=Path,
+        default=None,
+        help="DFU classification head checkpoint that consumes shared DINOv3 feature maps.",
+    )
+    parser.add_argument(
+        "--no-classification",
+        action="store_true",
+        help="Disable DFU classification even when --dfu-head-checkpoint is set.",
+    )
+    parser.add_argument("--classification-top-k", type=int, default=3)
     parser.add_argument("--amp", action="store_true")
     parser.add_argument("--server-name", type=str, default="127.0.0.1")
     parser.add_argument("--server-port", type=int, default=7861)
@@ -123,6 +139,11 @@ class RealtimeDFUSegmenter:
         self.device = resolve_device(config.device_name)
         self.model = load_model(self._to_infer_args(config), self.device)
         self.use_amp = bool(config.amp and self.device.type == "cuda")
+        self.dfu_head_bundle = None
+        if config.dfu_head_checkpoint is not None:
+            self.dfu_head_bundle = load_dfu_head_bundle(config.dfu_head_checkpoint, self.device)
+            print(f"Loaded DFU classification head: {config.dfu_head_checkpoint}")
+        self.classification_top_k = config.classification_top_k
 
         self._last_guidance: str | None = (
             "이미지 탭: 업로드 후 Run. 실시간 탭: WebRTC Start."
@@ -137,7 +158,7 @@ class RealtimeDFUSegmenter:
     def _to_infer_args(config: RuntimeConfig) -> argparse.Namespace:
         return argparse.Namespace(
             foot_head_checkpoint=config.foot_head_checkpoint,
-            ulcer_head_checkpoint=config.ulcer_head_checkpoint,
+            wound_head_checkpoint=config.wound_head_checkpoint,
             dinov3_repo=config.dinov3_repo,
             dinov3_checkpoint=config.dinov3_checkpoint,
         )
@@ -221,14 +242,14 @@ class RealtimeDFUSegmenter:
             SegmentationConfig(
                 image_size=self.config.image_size,
                 foot_threshold=self.config.foot_threshold,
-                ulcer_threshold=self.config.ulcer_threshold,
+                wound_threshold=self.config.wound_threshold,
                 guide_enabled=self.config.guide_enabled,
                 min_foot_ratio=self.config.min_foot_ratio,
                 max_foot_ratio=self.config.max_foot_ratio,
                 center_tolerance=self.config.center_tolerance,
-                min_ulcer_ratio=self.config.min_ulcer_ratio,
-                ulcer_feature_crop=self.config.ulcer_feature_crop,
-                ulcer_crop_margin=self.config.ulcer_crop_margin,
+                min_wound_ratio=self.config.min_wound_ratio,
+                wound_feature_crop=self.config.wound_feature_crop,
+                wound_crop_margin=self.config.wound_crop_margin,
             ),
             self.device,
             output_size=display_size,
@@ -238,14 +259,25 @@ class RealtimeDFUSegmenter:
             render_overlay(
                 display_image,
                 segmentation.foot_mask,
-                segmentation.ulcer_mask,
+                segmentation.wound_mask,
                 self.config.overlay_alpha,
-                segmentation.ulcer_crop_bbox,
+                segmentation.wound_crop_bbox,
             ),
             dtype=np.uint8,
         )
         total_ms = (perf_counter() - total_start) * 1000.0
         fps = 1000.0 / total_ms if total_ms > 0 else 0.0
+
+        classification_result = classify_shared_features(
+            segmentation.features,
+            self.dfu_head_bundle,
+            enabled=self.dfu_head_bundle is not None and segmentation.foot_detected,
+            top_k=self.classification_top_k,
+        )
+        classification_top_k = [
+            {"class_name": score.class_name, "probability": round(score.probability, 4)}
+            for score in classification_result.top_k
+        ]
 
         metrics = {
             "device": str(self.device),
@@ -264,21 +296,31 @@ class RealtimeDFUSegmenter:
             "foot_center_y": round(segmentation.foot_center_y, 4)
             if segmentation.foot_center_y is not None
             else None,
-            "ulcer_enabled": segmentation.ulcer_enabled,
-            "ulcer_detected": segmentation.ulcer_detected,
-            "ulcer_area_ratio": round(segmentation.ulcer_area_ratio, 4),
-            "ulcer_crop_bbox": segmentation.ulcer_crop_bbox,
-            "ulcer_feature_crop": self.config.ulcer_feature_crop,
-            "ulcer_crop_margin": self.config.ulcer_crop_margin,
+            "wound_enabled": segmentation.wound_enabled,
+            "wound_detected": segmentation.wound_detected,
+            "wound_area_ratio": round(segmentation.wound_area_ratio, 4),
+            "wound_crop_bbox": segmentation.wound_crop_bbox,
+            "wound_feature_crop": self.config.wound_feature_crop,
+            "wound_crop_margin": self.config.wound_crop_margin,
             "preprocess_ms": round(segmentation.preprocess_ms, 2),
             "backbone_ms": round(segmentation.backbone_ms, 2),
             "foot_head_ms": round(segmentation.foot_head_ms, 2),
             "model_ms": round(segmentation.model_ms, 2),
-            "ulcer_head_ms": round(segmentation.ulcer_head_ms, 2),
+            "wound_head_ms": round(segmentation.wound_head_ms, 2),
             "postprocess_ms": round(segmentation.postprocess_ms, 2),
             "total_ms": round(total_ms, 2),
             "fps": round(fps, 2),
             "webrtc_frames": self._webrtc_frames,
+            "classification_enabled": classification_result.enabled,
+            "classification_predicted_class": classification_result.predicted_class,
+            "classification_confidence": (
+                round(classification_result.confidence, 4)
+                if classification_result.confidence is not None
+                else None
+            ),
+            "classification_top_k": classification_top_k,
+            "classification_ms": classification_result.classification_ms,
+            "classification_checkpoint_path": classification_result.checkpoint_path,
         }
         return overlay, segmentation.capture_guidance, metrics
 
@@ -376,7 +418,7 @@ def build_app(
 
         gr.Markdown(
             """
-            # DFU Realtime Foot / Ulcer Segmentation
+            # DFU Realtime Foot / Wound Segmentation + Classification
             """,
             elem_classes=["section-title"],
         )
@@ -517,27 +559,29 @@ def main() -> None:
         print(f"Using image_size={image_size} from foot head checkpoint (CLI default was {args.image_size}).")
     config = RuntimeConfig(
         foot_head_checkpoint=args.foot_head_checkpoint,
-        ulcer_head_checkpoint=args.ulcer_head_checkpoint,
+        wound_head_checkpoint=args.wound_head_checkpoint,
         dinov3_repo=args.dinov3_repo,
         dinov3_checkpoint=args.dinov3_checkpoint,
         image_size=image_size,
         display_max_size=args.display_max_size,
         device_name=args.device,
         foot_threshold=args.foot_threshold,
-        ulcer_threshold=args.ulcer_threshold,
+        wound_threshold=args.wound_threshold,
         guide_enabled=not args.no_guide,
         min_foot_ratio=args.min_foot_ratio,
         max_foot_ratio=args.max_foot_ratio,
         center_tolerance=args.center_tolerance,
-        min_ulcer_ratio=args.min_ulcer_ratio,
-        ulcer_feature_crop=not args.no_ulcer_feature_crop,
-        ulcer_crop_margin=args.ulcer_crop_margin,
+        min_wound_ratio=args.min_wound_ratio,
+        wound_feature_crop=not args.no_wound_feature_crop,
+        wound_crop_margin=args.wound_crop_margin,
         overlay_alpha=args.overlay_alpha,
         amp=args.amp,
         stream_time_limit=args.stream_time_limit,
         stream_skip_frames=not args.no_stream_skip_frames,
         panel_width=args.panel_width,
         panel_height=args.panel_height,
+        dfu_head_checkpoint=None if args.no_classification else args.dfu_head_checkpoint,
+        classification_top_k=args.classification_top_k,
     )
     segmenter = RealtimeDFUSegmenter(config)
     app = build_app(

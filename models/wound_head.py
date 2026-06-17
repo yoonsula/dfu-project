@@ -3,12 +3,12 @@ from __future__ import annotations
 from .fastinst_head import FastInstSegHead
 
 
-class FastInstUlcerHead(FastInstSegHead):
+class FastInstWoundHead(FastInstSegHead):
     """
-    Lightweight FastInst-style ulcer segmentation head.
+    Lightweight FastInst-style wound segmentation head.
 
     It predicts a fixed set of instance masks with dynamic 1x1 kernels and
-    merges them into a single ulcer logit map.
+    merges them into a single wound logit map.
     """
 
     def __init__(

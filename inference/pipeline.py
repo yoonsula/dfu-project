@@ -18,48 +18,48 @@ from utils.runtime import synchronize_if_needed
 class SegmentationConfig:
     image_size: int
     foot_threshold: float = 0.5
-    ulcer_threshold: float = 0.5
+    wound_threshold: float = 0.5
     guide_enabled: bool = True
     min_foot_ratio: float = 0.08
     max_foot_ratio: float = 0.5
     center_tolerance: float = 0.25
-    min_ulcer_ratio: float = 0.001
-    ulcer_feature_crop: bool = True
-    ulcer_crop_margin: float = 0.15
+    min_wound_ratio: float = 0.001
+    wound_feature_crop: bool = True
+    wound_crop_margin: float = 0.15
 
 
 @dataclass(frozen=True)
 class StagedSegmentationOutput:
     features: torch.Tensor
     foot_logits: torch.Tensor
-    ulcer_logits: torch.Tensor | None
+    wound_logits: torch.Tensor | None
     backbone_ms: float
     foot_head_ms: float
-    ulcer_head_ms: float
+    wound_head_ms: float
 
 
 @dataclass(frozen=True)
 class GatedSegmentationResult:
     features: torch.Tensor = field(repr=False, compare=False)
     foot_mask: np.ndarray
-    ulcer_mask: np.ndarray
+    wound_mask: np.ndarray
     foot_mask_small: np.ndarray
-    ulcer_mask_small: np.ndarray | None
-    ulcer_crop_bbox: tuple[int, int, int, int] | None
+    wound_mask_small: np.ndarray | None
+    wound_crop_bbox: tuple[int, int, int, int] | None
     foot_detected: bool
     foot_area_ratio: float
     foot_centered: bool
     foot_center_x: float | None
     foot_center_y: float | None
     capture_guidance: str | None
-    ulcer_enabled: bool
-    ulcer_detected: bool
-    ulcer_area_ratio: float
+    wound_enabled: bool
+    wound_detected: bool
+    wound_area_ratio: float
     preprocess_ms: float
     backbone_ms: float
     foot_head_ms: float
     model_ms: float
-    ulcer_head_ms: float
+    wound_head_ms: float
     postprocess_ms: float
 
 
@@ -79,10 +79,10 @@ def forward_segmentation_staged(
     input_tensor: torch.Tensor,
     device: torch.device,
     *,
-    run_ulcer: bool,
+    run_wound: bool,
     autocast_context: Callable[[], Any] | None = None,
 ) -> StagedSegmentationOutput:
-    """Run backbone once, foot head, then optionally ulcer head on the same features."""
+    """Run backbone once, foot head, then optionally wound head on the same features."""
     output_size = tuple(int(value) for value in input_tensor.shape[-2:])
     context_factory = autocast_context or (lambda: nullcontext())
 
@@ -97,22 +97,22 @@ def forward_segmentation_staged(
         synchronize_if_needed(device)
         foot_head_ms = (perf_counter() - foot_start) * 1000.0
 
-    ulcer_logits = None
-    ulcer_head_ms = 0.0
-    if run_ulcer:
+    wound_logits = None
+    wound_head_ms = 0.0
+    if run_wound:
         with context_factory():
-            ulcer_start = perf_counter()
-            ulcer_logits = model.predict_ulcer_logits(features, output_size)
+            wound_start = perf_counter()
+            wound_logits = model.predict_wound_logits(features, output_size)
             synchronize_if_needed(device)
-            ulcer_head_ms = (perf_counter() - ulcer_start) * 1000.0
+            wound_head_ms = (perf_counter() - wound_start) * 1000.0
 
     return StagedSegmentationOutput(
         features=features,
         foot_logits=foot_logits,
-        ulcer_logits=ulcer_logits,
+        wound_logits=wound_logits,
         backbone_ms=backbone_ms,
         foot_head_ms=foot_head_ms,
-        ulcer_head_ms=ulcer_head_ms,
+        wound_head_ms=wound_head_ms,
     )
 
 
@@ -194,7 +194,7 @@ def resize_bbox(
     return scale_bbox(bbox, source_size=source_size, target_size=target_size)
 
 
-def predict_ulcer_logits_for_foot_crop(
+def predict_wound_logits_for_foot_crop(
     model: SingleTaskSegModel,
     features: torch.Tensor,
     foot_mask: np.ndarray,
@@ -204,7 +204,7 @@ def predict_ulcer_logits_for_foot_crop(
     model_height, model_width = model_size
     image_bbox = bbox_from_mask(foot_mask, margin_ratio)
     if image_bbox is None:
-        return model.predict_ulcer_logits(features, model_size)
+        return model.predict_wound_logits(features, model_size)
 
     feature_height, feature_width = features.shape[-2:]
     feature_bbox = scale_bbox(
@@ -214,12 +214,12 @@ def predict_ulcer_logits_for_foot_crop(
     )
     feature_x_min, feature_y_min, feature_x_max, feature_y_max = feature_bbox
     if feature_x_max <= feature_x_min or feature_y_max <= feature_y_min:
-        return model.predict_ulcer_logits(features, model_size)
+        return model.predict_wound_logits(features, model_size)
 
     image_x_min, image_y_min, image_x_max, image_y_max = image_bbox
     crop_features = features[..., feature_y_min:feature_y_max, feature_x_min:feature_x_max]
     crop_size = (image_y_max - image_y_min, image_x_max - image_x_min)
-    crop_logits = model.predict_ulcer_logits(crop_features, crop_size)
+    crop_logits = model.predict_wound_logits(crop_features, crop_size)
 
     full_logits = torch.full(
         (features.shape[0], 1, model_height, model_width),
@@ -267,24 +267,24 @@ def resize_mask(mask: np.ndarray, size: tuple[int, int]) -> np.ndarray:
 def render_overlay(
     image: Image.Image,
     foot_mask: np.ndarray,
-    ulcer_mask: np.ndarray,
+    wound_mask: np.ndarray,
     alpha: float,
-    ulcer_crop_bbox: tuple[int, int, int, int] | None = None,
+    wound_crop_bbox: tuple[int, int, int, int] | None = None,
 ) -> Image.Image:
     base = np.asarray(image.convert("RGB"), dtype=np.float32)
     overlay = base.copy()
 
     foot_bool = foot_mask.astype(bool)
-    ulcer_bool = ulcer_mask.astype(bool)
+    wound_bool = wound_mask.astype(bool)
 
     foot_color = np.asarray([0, 128, 255], dtype=np.float32)
-    ulcer_color = np.asarray([255, 0, 0], dtype=np.float32)
+    wound_color = np.asarray([255, 0, 0], dtype=np.float32)
     overlay[foot_bool] = overlay[foot_bool] * (1.0 - alpha) + foot_color * alpha
-    overlay[ulcer_bool] = overlay[ulcer_bool] * (1.0 - alpha) + ulcer_color * alpha
+    overlay[wound_bool] = overlay[wound_bool] * (1.0 - alpha) + wound_color * alpha
     rendered = Image.fromarray(np.clip(overlay, 0, 255).astype(np.uint8), mode="RGB")
-    if ulcer_crop_bbox is not None:
+    if wound_crop_bbox is not None:
         draw = ImageDraw.Draw(rendered)
-        x_min, y_min, x_max, y_max = ulcer_crop_bbox
+        x_min, y_min, x_max, y_max = wound_crop_bbox
         for inset in range(3):
             draw.rectangle(
                 (x_min + inset, y_min + inset, max(x_min, x_max - 1 - inset), max(y_min, y_max - 1 - inset)),
@@ -312,7 +312,7 @@ def run_gated_segmentation(
         model,
         input_tensor,
         device,
-        run_ulcer=False,
+        run_wound=False,
         autocast_context=autocast_context,
     )
     model_ms = staged.backbone_ms + staged.foot_head_ms
@@ -337,75 +337,75 @@ def run_gated_segmentation(
         )
         if foot_detected:
             capture_guidance = "촬영 거리가 적절합니다." if foot_centered else center_guidance
-        ulcer_enabled = foot_detected and foot_centered
+        wound_enabled = foot_detected and foot_centered
     else:
         foot_detected = foot_present
         foot_centered = foot_present
         capture_guidance = None
-        ulcer_enabled = foot_present
+        wound_enabled = foot_present
 
-    ulcer_head_ms = 0.0
-    ulcer_mask_small: np.ndarray | None = None
+    wound_head_ms = 0.0
+    wound_mask_small: np.ndarray | None = None
     model_size = tuple(int(value) for value in input_tensor.shape[-2:])
     model_height, model_width = model_size
-    ulcer_crop_bbox_small = (
-        bbox_from_mask(foot_mask_small, config.ulcer_crop_margin)
-        if ulcer_enabled and config.ulcer_feature_crop
+    wound_crop_bbox_small = (
+        bbox_from_mask(foot_mask_small, config.wound_crop_margin)
+        if wound_enabled and config.wound_feature_crop
         else None
     )
-    if ulcer_enabled:
+    if wound_enabled:
         context_factory = autocast_context or (lambda: nullcontext())
         with context_factory():
-            ulcer_start = perf_counter()
-            if config.ulcer_feature_crop:
-                ulcer_logits = predict_ulcer_logits_for_foot_crop(
+            wound_start = perf_counter()
+            if config.wound_feature_crop:
+                wound_logits = predict_wound_logits_for_foot_crop(
                     model,
                     staged.features,
                     foot_mask_small,
                     model_size,
-                    config.ulcer_crop_margin,
+                    config.wound_crop_margin,
                 )
             else:
-                ulcer_logits = model.predict_ulcer_logits(staged.features, model_size)
+                wound_logits = model.predict_wound_logits(staged.features, model_size)
             synchronize_if_needed(device)
-            ulcer_head_ms = (perf_counter() - ulcer_start) * 1000.0
-        ulcer_prob = torch.sigmoid(ulcer_logits)[0, 0].detach().float().cpu().numpy()
-        ulcer_mask_small = ulcer_prob > config.ulcer_threshold
-        ulcer_mask = resize_mask(ulcer_mask_small, output_size)
-        ulcer_area_ratio = float(ulcer_mask_small.mean())
+            wound_head_ms = (perf_counter() - wound_start) * 1000.0
+        wound_prob = torch.sigmoid(wound_logits)[0, 0].detach().float().cpu().numpy()
+        wound_mask_small = wound_prob > config.wound_threshold
+        wound_mask = resize_mask(wound_mask_small, output_size)
+        wound_area_ratio = float(wound_mask_small.mean())
     else:
-        ulcer_mask = np.zeros(output_size[::-1], dtype=np.uint8)
-        ulcer_area_ratio = 0.0
+        wound_mask = np.zeros(output_size[::-1], dtype=np.uint8)
+        wound_area_ratio = 0.0
 
     foot_mask = resize_mask(foot_mask_small, output_size)
-    ulcer_crop_bbox = resize_bbox(
-        ulcer_crop_bbox_small,
+    wound_crop_bbox = resize_bbox(
+        wound_crop_bbox_small,
         source_size=(model_width, model_height),
         target_size=output_size,
     )
     postprocess_ms = (perf_counter() - postprocess_start) * 1000.0
-    ulcer_detected = bool(ulcer_enabled and ulcer_area_ratio >= config.min_ulcer_ratio)
+    wound_detected = bool(wound_enabled and wound_area_ratio >= config.min_wound_ratio)
 
     return GatedSegmentationResult(
         features=staged.features,
         foot_mask=foot_mask,
-        ulcer_mask=ulcer_mask,
+        wound_mask=wound_mask,
         foot_mask_small=foot_mask_small,
-        ulcer_mask_small=ulcer_mask_small,
-        ulcer_crop_bbox=ulcer_crop_bbox,
+        wound_mask_small=wound_mask_small,
+        wound_crop_bbox=wound_crop_bbox,
         foot_detected=foot_detected,
         foot_area_ratio=foot_area_ratio,
         foot_centered=foot_centered,
         foot_center_x=foot_center_x,
         foot_center_y=foot_center_y,
         capture_guidance=capture_guidance,
-        ulcer_enabled=ulcer_enabled,
-        ulcer_detected=ulcer_detected,
-        ulcer_area_ratio=ulcer_area_ratio,
+        wound_enabled=wound_enabled,
+        wound_detected=wound_detected,
+        wound_area_ratio=wound_area_ratio,
         preprocess_ms=preprocess_ms,
         backbone_ms=staged.backbone_ms,
         foot_head_ms=staged.foot_head_ms,
         model_ms=model_ms,
-        ulcer_head_ms=ulcer_head_ms,
+        wound_head_ms=wound_head_ms,
         postprocess_ms=postprocess_ms,
     )

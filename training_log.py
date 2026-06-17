@@ -42,9 +42,9 @@ def collect_dataset_stats(dataset: DiabeticFootDataset, loader: DataLoader) -> d
 def collect_dataset_info(
     args: Any,
     foot_train: DataLoader,
-    ulcer_train: DataLoader,
+    wound_train: DataLoader,
     foot_val: DataLoader,
-    ulcer_val: DataLoader,
+    wound_val: DataLoader,
 ) -> dict[str, Any]:
     return {
         "paths": {
@@ -54,7 +54,7 @@ def collect_dataset_info(
             ],
             "body_root": str(args.body_root),
             "humanbody_root": str(args.humanbody_root),
-            "ulcer_root": str(args.ulcer_root),
+            "wound_root": str(args.wound_root),
             "wound_image_root": None if args.no_wound_image else str(args.wound_image_root),
             "dinov3_repo": str(args.dinov3_repo),
             "dinov3_checkpoint": str(args.dinov3_checkpoint),
@@ -62,11 +62,11 @@ def collect_dataset_info(
         "splits": {
             "foot_train": collect_dataset_stats(foot_train.dataset, foot_train),
             "foot_val": collect_dataset_stats(foot_val.dataset, foot_val),
-            "ulcer_train": collect_dataset_stats(ulcer_train.dataset, ulcer_train),
-            "ulcer_val": collect_dataset_stats(ulcer_val.dataset, ulcer_val),
+            "wound_train": collect_dataset_stats(wound_train.dataset, wound_train),
+            "wound_val": collect_dataset_stats(wound_val.dataset, wound_val),
         },
-        "total_train_samples": len(foot_train.dataset) + len(ulcer_train.dataset),
-        "total_val_samples": len(foot_val.dataset) + len(ulcer_val.dataset),
+        "total_train_samples": len(foot_train.dataset) + len(wound_train.dataset),
+        "total_val_samples": len(foot_val.dataset) + len(wound_val.dataset),
     }
 
 
