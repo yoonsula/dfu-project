@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from contextlib import nullcontext
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from time import perf_counter
 from typing import Any, Callable
 
@@ -37,6 +37,7 @@ class StagedSegmentationOutput:
 
 @dataclass(frozen=True)
 class GatedSegmentationResult:
+    features: torch.Tensor = field(repr=False, compare=False)
     foot_mask: np.ndarray
     ulcer_mask: np.ndarray
     foot_mask_small: np.ndarray
@@ -251,6 +252,7 @@ def run_gated_segmentation(
     ulcer_detected = bool(ulcer_enabled and ulcer_area_ratio >= config.min_ulcer_ratio)
 
     return GatedSegmentationResult(
+        features=staged.features,
         foot_mask=foot_mask,
         ulcer_mask=ulcer_mask,
         foot_mask_small=foot_mask_small,

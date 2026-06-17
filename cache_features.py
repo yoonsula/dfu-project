@@ -11,6 +11,7 @@ from torch.utils.data import DataLoader
 
 from cli.dataset_args import add_dataset_args
 from data.loaders import make_loader
+from datasets import ClassificationImageDataset
 from models import DINOv3Backbone
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
 from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
@@ -26,7 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--task",
         type=str,
-        choices=("foot", "ulcer", "both"),
+        choices=("foot", "ulcer", "dfu", "both", "all"),
         default="both",
         help="Which task splits to cache.",
     )
@@ -67,6 +68,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--pin-memory", action="store_true")
     parser.add_argument("--limit-batches", type=int, default=None)
     parser.add_argument("--image-size", type=int, default=768)
+    parser.add_argument(
+        "--dfu-root",
+        type=Path,
+        default=None,
+        help="DFU classification ImageFolder root. Expected root/class_name/*.jpg or root/train/class_name/*.jpg.",
+    )
+    parser.add_argument(
+        "--dfu-csv",
+        type=Path,
+        default=None,
+        help="DFU classification CSV with image_path/path/image and label/class/class_name columns.",
+    )
+    parser.add_argument(
+        "--dfu-class",
+        action="append",
+        default=None,
+        help="Classification class name in fixed order. Repeat for deterministic label mapping.",
+    )
 
     add_dataset_args(parser)
     return parser.parse_args()
@@ -107,18 +126,23 @@ def flush_shard(
     out_dir: Path,
     shard_index: int,
     features: list[torch.Tensor],
-    masks: list[torch.Tensor],
-    loss_weights: list[torch.Tensor],
+    masks: list[torch.Tensor] | None,
+    loss_weights: list[torch.Tensor] | None,
+    labels: list[torch.Tensor] | None,
     image_paths: list[str],
     dtype: torch.dtype,
 ) -> Path:
     shard_path = out_dir / f"shard_{shard_index:05d}.pt"
     payload = {
         "features": torch.stack(features).to(dtype=dtype),
-        "masks": torch.stack(masks),
-        "loss_weights": torch.stack(loss_weights),
         "image_paths": image_paths,
     }
+    if masks is not None:
+        payload["masks"] = torch.stack(masks)
+    if loss_weights is not None:
+        payload["loss_weights"] = torch.stack(loss_weights)
+    if labels is not None:
+        payload["labels"] = torch.stack(labels)
     torch.save(payload, shard_path)
     return shard_path
 
@@ -137,8 +161,9 @@ def cache_split(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     pending_features: list[torch.Tensor] = []
-    pending_masks: list[torch.Tensor] = []
-    pending_weights: list[torch.Tensor] = []
+    pending_masks: list[torch.Tensor] | None = None
+    pending_weights: list[torch.Tensor] | None = None
+    pending_labels: list[torch.Tensor] | None = None
     pending_paths: list[str] = []
     shard_names: list[str] = []
     shard_sizes: list[int] = []
@@ -156,16 +181,33 @@ def cache_split(
             features = backbone(images)
 
         features = features.detach().cpu()
-        masks = batch["mask"].detach().cpu()
         batch_size = features.shape[0]
         if feature_shape is None:
             feature_shape = list(features.shape[1:])
-            mask_shape = list(masks.shape[1:])
 
-        if "loss_weight" in batch:
-            weights = batch["loss_weight"].detach().cpu()
-        else:
+        masks = batch.get("mask")
+        if masks is not None:
+            masks = masks.detach().cpu()
+            if pending_masks is None:
+                pending_masks = []
+            if mask_shape is None:
+                mask_shape = list(masks.shape[1:])
+
+        weights = batch.get("loss_weight")
+        if weights is not None:
+            weights = weights.detach().cpu()
+            if pending_weights is None:
+                pending_weights = []
+        elif masks is not None:
             weights = torch.ones(batch_size, dtype=torch.float32)
+            if pending_weights is None:
+                pending_weights = []
+
+        labels = batch.get("label")
+        if labels is not None:
+            labels = labels.detach().cpu()
+            if pending_labels is None:
+                pending_labels = []
 
         paths = batch["image_path"]
         if isinstance(paths, str):
@@ -173,8 +215,12 @@ def cache_split(
 
         for sample_index in range(batch_size):
             pending_features.append(features[sample_index])
-            pending_masks.append(masks[sample_index])
-            pending_weights.append(weights[sample_index])
+            if pending_masks is not None and masks is not None:
+                pending_masks.append(masks[sample_index])
+            if pending_weights is not None and weights is not None:
+                pending_weights.append(weights[sample_index])
+            if pending_labels is not None and labels is not None:
+                pending_labels.append(labels[sample_index])
             pending_paths.append(paths[sample_index])
             total += 1
 
@@ -185,6 +231,7 @@ def cache_split(
                     pending_features,
                     pending_masks,
                     pending_weights,
+                    pending_labels,
                     pending_paths,
                     dtype,
                 )
@@ -192,8 +239,9 @@ def cache_split(
                 shard_sizes.append(len(pending_features))
                 shard_index += 1
                 pending_features = []
-                pending_masks = []
-                pending_weights = []
+                pending_masks = [] if pending_masks is not None else None
+                pending_weights = [] if pending_weights is not None else None
+                pending_labels = [] if pending_labels is not None else None
                 pending_paths = []
 
         if (batch_index + 1) % 20 == 0:
@@ -206,6 +254,7 @@ def cache_split(
             pending_features,
             pending_masks,
             pending_weights,
+            pending_labels,
             pending_paths,
             dtype,
         )
@@ -228,6 +277,8 @@ def cache_split(
 def tasks_for_args(args: argparse.Namespace) -> list[str]:
     if args.task == "both":
         return ["foot", "ulcer"]
+    if args.task == "all":
+        return ["foot", "ulcer", "dfu"]
     return [args.task]
 
 
@@ -257,7 +308,28 @@ def main() -> None:
         top_manifest["tasks"][task] = {}
         for split in splits_for_args(args):
             print(f"Caching {task}/{split} -> {output_dir / task / split}")
-            loader = make_loader(task, split, args, shuffle=False)
+            if task == "dfu":
+                dataset = ClassificationImageDataset(
+                    root=args.dfu_root,
+                    csv_path=args.dfu_csv,
+                    split=split,
+                    image_size=args.image_size,
+                    val_ratio=args.val_ratio,
+                    seed=args.seed,
+                    classes=args.dfu_class,
+                )
+                loader = DataLoader(
+                    dataset,
+                    batch_size=args.batch_size,
+                    shuffle=False,
+                    num_workers=args.num_workers,
+                    pin_memory=bool(args.pin_memory and torch.cuda.is_available()),
+                    drop_last=False,
+                )
+                top_manifest["tasks"][task]["classes"] = list(dataset.classes)
+                top_manifest["tasks"][task]["id2label"] = dataset.id2label
+            else:
+                loader = make_loader(task, split, args, shuffle=False)
             split_manifest = cache_split(
                 backbone=backbone,
                 loader=loader,
@@ -268,6 +340,11 @@ def main() -> None:
                 use_amp=use_amp,
                 limit_batches=args.limit_batches,
             )
+            if task == "dfu":
+                split_manifest["classes"] = list(dataset.classes)
+                split_manifest["id2label"] = dataset.id2label
+                with (output_dir / task / split / "manifest.json").open("w", encoding="utf-8") as handle:
+                    json.dump(split_manifest, handle, indent=2, ensure_ascii=False)
             top_manifest["tasks"][task][split] = split_manifest
             print(f"  done: {split_manifest['count']} samples, {len(split_manifest['shards'])} shards")
 

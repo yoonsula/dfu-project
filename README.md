@@ -138,6 +138,20 @@ python infer.py ... --no-classification
 python infer_classification.py --image /path/to/image.jpg
 ```
 
+### Shared backbone + separate head checkpoints
+
+Backbone을 freeze하고 task별 환경에서 head만 따로 학습한 경우에는 checkpoint 3개를 함께 지정합니다. 이 경로는 inference에서 DINOv3 backbone을 한 번만 실행한 뒤 같은 feature map을 foot, wound/ulcer, DFU classification head에 공유합니다.
+
+```bash
+python infer.py \
+  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
+  --ulcer-head-checkpoint output/train/wound_head_v1/best.pt \
+  --shared-classification-checkpoint output/train/dfu_head_v1/best.pt \
+  --image /path/to/image_or_dir \
+  --image-size 384 \
+  --device cuda
+```
+
 ## Gradio + FastRTC (Realtime UI)
 
 웹캠은 **FastRTC** (`WebRTC` 컴포넌트)로 스트리밍합니다.
@@ -196,6 +210,145 @@ python train.py \
   --foot-root ../../03_데이터/dfu-foot-sam3-filtered/train \
   --image-size 384 --batch-size 64 --amp
 ```
+
+## Head-Only Training With Shared Frozen Backbone
+
+세 task의 데이터셋과 학습 환경이 서로 다르면, backbone은 고정하고 각 head를 따로 학습하는 방식을 권장합니다. 전체 흐름은 다음과 같습니다.
+
+```text
+각 task dataset image
+  -> 같은 frozen DINOv3Backbone
+  -> feature cache 저장
+  -> task별 head만 학습
+  -> foot_head.pt / wound_head.pt / dfu_head.pt
+```
+
+중요한 조건은 task별 환경이 달라도 아래 설정은 같아야 한다는 점입니다.
+
+- 같은 DINOv3 모델: `dinov3_vits16`
+- 같은 backbone checkpoint: `dinov3_vits16_pretrain_lvd1689m-08c60483.pth`
+- 같은 `--image-size`
+- 같은 preprocessing/normalization
+- 같은 feature 형태: `[B, 384, H/16, W/16]`
+
+### 1. DFU classification dataset format
+
+DFU classification 데이터는 ImageFolder 형식을 권장합니다.
+
+```text
+dfu_root/
+  train/
+    TS6_normal skin/
+    diabetic ulcer/
+    other_injury/
+  val/
+    TS6_normal skin/
+    diabetic ulcer/
+    other_injury/
+```
+
+`train/val` 폴더가 없으면 class 폴더만 두고 `--val-ratio`로 자동 분할할 수 있습니다.
+
+```text
+dfu_root/
+  TS6_normal skin/
+  diabetic ulcer/
+  other_injury/
+```
+
+CSV도 사용할 수 있습니다. CSV에는 `image_path`/`path`/`image` 중 하나와 `label`/`class`/`class_name` 중 하나가 필요합니다. `split` 컬럼이 있으면 `train`, `val`을 그대로 사용합니다.
+
+### 2. Feature cache 생성
+
+각 환경에서 자기 task 데이터만 cache하면 됩니다. 단 `--image-size`, DINOv3 repo/checkpoint는 inference에서 쓸 설정과 동일하게 유지합니다.
+
+```bash
+# Foot segmentation features
+python cache_features.py \
+  --task foot \
+  --split both \
+  --output-dir output/feature_cache/shared_v1 \
+  --image-size 384 \
+  --batch-size 16 \
+  --device cuda
+
+# Wound/ulcer segmentation features
+python cache_features.py \
+  --task ulcer \
+  --split both \
+  --output-dir output/feature_cache/shared_v1 \
+  --image-size 384 \
+  --batch-size 16 \
+  --device cuda
+
+# DFU classification features
+python cache_features.py \
+  --task dfu \
+  --split both \
+  --dfu-root /path/to/dfu_root \
+  --dfu-class "TS6_normal skin" \
+  --dfu-class "diabetic ulcer" \
+  --dfu-class "other_injury" \
+  --output-dir output/feature_cache/shared_v1 \
+  --image-size 384 \
+  --batch-size 16 \
+  --device cuda
+```
+
+생성되는 cache 구조:
+
+```text
+output/feature_cache/shared_v1/
+  foot/train/
+  foot/val/
+  ulcer/train/
+  ulcer/val/
+  dfu/train/
+  dfu/val/
+```
+
+### 3. Head-only 학습
+
+`train_feature_head.py`는 저장된 feature만 읽어서 해당 task head만 학습합니다. Backbone forward와 gradient 계산이 없어서 빠르고, task별 환경에서 독립적으로 실행할 수 있습니다.
+
+```bash
+python train_feature_head.py \
+  --task foot \
+  --cache-dir output/feature_cache/shared_v1 \
+  --output-dir output/train \
+  --run-name foot_head_v1 \
+  --epochs 30 \
+  --batch-size 64 \
+  --device cuda
+
+python train_feature_head.py \
+  --task ulcer \
+  --cache-dir output/feature_cache/shared_v1 \
+  --output-dir output/train \
+  --run-name wound_head_v1 \
+  --epochs 30 \
+  --batch-size 64 \
+  --device cuda
+
+python train_feature_head.py \
+  --task dfu \
+  --cache-dir output/feature_cache/shared_v1 \
+  --output-dir output/train \
+  --run-name dfu_head_v1 \
+  --epochs 30 \
+  --batch-size 64 \
+  --device cuda
+```
+
+각 run은 `best.pt`와 `last.pt`를 저장합니다.
+
+```text
+output/train/foot_head_v1/best.pt
+output/train/wound_head_v1/best.pt
+output/train/dfu_head_v1/best.pt
+```
+
+이 세 checkpoint는 `infer.py`에서 `--foot-head-checkpoint`, `--ulcer-head-checkpoint`, `--shared-classification-checkpoint`로 함께 로드합니다.
 
 ## Dataset Acknowledgments
 
