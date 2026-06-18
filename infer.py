@@ -17,7 +17,7 @@ from inference.pipeline import run_gated_segmentation
 from inference.pipeline import render_overlay
 from infer_classification import ClassificationBundle, classify_image, load_classification_bundle
 from infer_classification import ClassificationResult, ClassScore
-from models import DINOv3Backbone, DFUFeatureClassifierHead, SingleTaskSegModel
+from models import DFUFeatureClassifierHead, DFUPipelineModel, DINOv3Backbone
 from paths import DEFAULT_CLASSIFICATION_CHECKPOINT
 from paths import INFERENCE_OUTPUT_DIR as DEFAULT_OUTPUT_DIR
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
@@ -205,13 +205,13 @@ def load_segmentation_head(
         )
 
 
-def load_model(args: argparse.Namespace, device: torch.device) -> SingleTaskSegModel:
+def load_pipeline_model(args: argparse.Namespace, device: torch.device) -> DFUPipelineModel:
     backbone = DINOv3Backbone(
         repo_dir=args.dinov3_repo,
         checkpoint_path=args.dinov3_checkpoint,
         freeze=True,
     )
-    model = SingleTaskSegModel(backbone=backbone).to(device)
+    model = DFUPipelineModel(backbone=backbone).to(device)
     if args.foot_head_checkpoint is not None:
         load_segmentation_head(
             model.foot_head,
@@ -228,6 +228,11 @@ def load_model(args: argparse.Namespace, device: torch.device) -> SingleTaskSegM
         )
     model.eval()
     return model
+
+
+def load_model(args: argparse.Namespace, device: torch.device) -> DFUPipelineModel:
+    """Backward-compatible alias for :func:`load_pipeline_model`."""
+    return load_pipeline_model(args, device)
 
 
 def resolve_image_size_from_checkpoint(
@@ -342,7 +347,7 @@ def save_mask(mask: np.ndarray, path: Path) -> None:
 
 @torch.inference_mode()
 def predict_image(
-    model: SingleTaskSegModel,
+    model: DFUPipelineModel,
     image_path: Path,
     args: argparse.Namespace,
     device: torch.device,

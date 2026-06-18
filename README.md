@@ -42,7 +42,7 @@ python app_gradio.py \
 Input Image
     │
     ▼
-[1] Foot + Wound Segmentation (SingleTaskSegModel)
+[1] Foot + Wound Segmentation (DFUPipelineModel)
     │   DINOv3 ViT-S/16 + FastInst-style heads
     │
     ├── foot 미탐지 → DFU 분류 스킵
@@ -92,7 +92,7 @@ dfu-project/
 │   ├── dfu_classifier.py               # DINOv3 + linear head
 │   ├── fastinst_head.py                 # shared segmentation head block
 │   ├── foot_head.py / wound_head.py
-│   └── single_task_model.py
+│   └── pipeline_model.py               # inference assembly (backbone + heads)
 ├── datasets/
 │   ├── catalog.py                       # training data source list
 │   ├── source_loaders.py                # COCO / FUSeg / Wound loaders
@@ -203,7 +203,7 @@ python train.py \
   --foot-augment
 ```
 
-`train.py`는 `--task`에 따라 `trainers/` 아래 trainer로 위임합니다. segmentation foot/wound는 `trainers/segmentation.py`를 공유합니다.
+`train.py`는 `--task`에 따라 `trainers/` 아래 trainer로 위임합니다. 학습은 task마다 **frozen backbone + head 하나**만 사용하고, 추론에서 `DFUPipelineModel`이 backbone과 head checkpoint를 조합합니다.
 
 ```bash
 python train.py --task foot ...

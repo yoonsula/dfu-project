@@ -10,7 +10,7 @@ import torch
 from PIL import Image, ImageDraw
 
 from datasets.diabetic_foot_dataset import IMAGENET_MEAN, IMAGENET_STD
-from models import SingleTaskSegModel
+from models import DFUPipelineModel
 from utils.runtime import synchronize_if_needed
 
 
@@ -75,7 +75,7 @@ def preprocess_image(image: Image.Image, image_size: int, device: torch.device) 
 
 @torch.inference_mode()
 def forward_segmentation_staged(
-    model: SingleTaskSegModel,
+    model: DFUPipelineModel,
     input_tensor: torch.Tensor,
     device: torch.device,
     *,
@@ -195,7 +195,7 @@ def resize_bbox(
 
 
 def predict_wound_logits_for_foot_crop(
-    model: SingleTaskSegModel,
+    model: DFUPipelineModel,
     features: torch.Tensor,
     foot_mask: np.ndarray,
     model_size: tuple[int, int],
@@ -295,7 +295,7 @@ def render_overlay(
 
 @torch.inference_mode()
 def run_gated_segmentation(
-    model: SingleTaskSegModel,
+    model: DFUPipelineModel,
     image: Image.Image,
     config: SegmentationConfig,
     device: torch.device,

@@ -6,11 +6,13 @@ from time import perf_counter
 from typing import Any
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from data.loaders import make_loader as make_segmentation_loader
 from losses import binary_segmentation_metrics, segmentation_loss
-from models import DINOv3Backbone, SingleTaskSegModel
+from models import DINOv3Backbone, FastInstFootHead, FastInstWoundHead
 from training_log import (
     TrainingLogger,
     collect_dataset_stats,
@@ -22,6 +24,28 @@ from trainers.common import limited_batches
 from trainers.common import make_lr_scheduler
 from utils.runtime import autocast_context
 from utils.runtime import make_grad_scaler
+
+
+def build_segmentation_head(task: str) -> nn.Module:
+    if task == "foot":
+        return FastInstFootHead()
+    if task == "wound":
+        return FastInstWoundHead()
+    raise ValueError(f"Unsupported segmentation task: {task}")
+
+
+def build_segmentation_train_stack(
+    args: argparse.Namespace,
+    task: str,
+    device: torch.device,
+) -> tuple[DINOv3Backbone, nn.Module]:
+    backbone = DINOv3Backbone(
+        repo_dir=args.dinov3_repo,
+        checkpoint_path=args.dinov3_checkpoint,
+        freeze=not args.unfreeze_backbone,
+    ).to(device)
+    head = build_segmentation_head(task).to(device)
+    return backbone, head
 
 
 def move_batch(
@@ -36,31 +60,26 @@ def move_batch(
     return images, masks, loss_weight.to(device, non_blocking=True)
 
 
-def predict_task_logits(
-    model: SingleTaskSegModel,
+def predict_segmentation_logits(
+    backbone: DINOv3Backbone,
+    head: nn.Module,
     images: torch.Tensor,
-    task: str,
 ) -> torch.Tensor:
-    features = model.encode(images)
+    features = backbone(images)
     output_size = tuple(int(value) for value in images.shape[-2:])
-    if task == "foot":
-        return model.predict_foot_logits(features, output_size)
-    if task == "wound":
-        return model.predict_wound_logits(features, output_size)
-    raise ValueError(f"Unsupported task: {task}")
+    logits = head(features)
+    return F.interpolate(
+        logits,
+        size=output_size,
+        mode="bilinear",
+        align_corners=False,
+    )
 
 
-def configure_task_training(model: SingleTaskSegModel, task: str) -> None:
-    for parameter in model.foot_head.parameters():
-        parameter.requires_grad = task == "foot"
-    for parameter in model.wound_head.parameters():
-        parameter.requires_grad = task == "wound"
-
-
-def train_one_task_batch(
-    model: SingleTaskSegModel,
+def train_one_batch(
+    backbone: DINOv3Backbone,
+    head: nn.Module,
     batch: dict,
-    task: str,
     optimizer: torch.optim.Optimizer,
     scaler: Any,
     device: torch.device,
@@ -70,7 +89,7 @@ def train_one_task_batch(
     optimizer.zero_grad(set_to_none=True)
 
     with autocast_context(device, use_amp):
-        logits = predict_task_logits(model, images, task)
+        logits = predict_segmentation_logits(backbone, head, images)
         loss = segmentation_loss(logits, masks, sample_weights=loss_weight)
 
     scaler.scale(loss).backward()
@@ -90,7 +109,8 @@ def _average_metric_batches(metric_batches: list[dict[str, float]]) -> dict[str,
 
 
 def train_epoch(
-    model: SingleTaskSegModel,
+    backbone: DINOv3Backbone,
+    head: nn.Module,
     loader: DataLoader,
     task: str,
     optimizer: torch.optim.Optimizer,
@@ -99,14 +119,15 @@ def train_epoch(
     use_amp: bool,
     limit_batches: int | None,
 ) -> dict[str, float]:
-    model.train()
+    backbone.eval()
+    head.train()
     total = 0.0
     steps = 0
     metric_batches: list[dict[str, float]] = []
 
     for batch in limited_batches(loader, limit_batches):
-        loss, metrics = train_one_task_batch(
-            model, batch, task, optimizer, scaler, device, use_amp
+        loss, metrics = train_one_batch(
+            backbone, head, batch, optimizer, scaler, device, use_amp
         )
         total += loss
         steps += 1
@@ -128,13 +149,15 @@ def train_epoch(
 
 @torch.no_grad()
 def validate_task(
-    model: SingleTaskSegModel,
+    backbone: DINOv3Backbone,
+    head: nn.Module,
     loader: DataLoader,
     task: str,
     device: torch.device,
     limit_batches: int | None,
 ) -> dict[str, float]:
-    model.eval()
+    backbone.eval()
+    head.eval()
     total_loss = 0.0
     total_dice = 0.0
     total_iou = 0.0
@@ -143,7 +166,7 @@ def validate_task(
 
     for batch in limited_batches(loader, limit_batches):
         images, masks, loss_weight = move_batch(batch, device)
-        logits = predict_task_logits(model, images, task)
+        logits = predict_segmentation_logits(backbone, head, images)
         metrics = binary_segmentation_metrics(logits, masks)
         total_loss += float(segmentation_loss(logits, masks, sample_weights=loss_weight).item())
         total_dice += metrics["dice"]
@@ -165,7 +188,7 @@ def validate_task(
 
 def save_checkpoint(
     path: Path,
-    model: SingleTaskSegModel,
+    head: nn.Module,
     optimizer: torch.optim.Optimizer,
     epoch: int,
     metrics: dict[str, float],
@@ -173,12 +196,10 @@ def save_checkpoint(
     scheduler: torch.optim.lr_scheduler.LRScheduler | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    task_head = model.foot_head if args.task == "foot" else model.wound_head
     payload: dict[str, Any] = {
         "task": args.task,
         "epoch": epoch,
-        "model": model.state_dict(),
-        "head_state_dict": task_head.state_dict(),
+        "head_state_dict": head.state_dict(),
         "optimizer": optimizer.state_dict(),
         "metrics": metrics,
         "args": vars(args),
@@ -213,15 +234,13 @@ def run_segmentation_training(
     train_loader = make_segmentation_loader(task, "train", args, shuffle=True)
     val_loader = make_segmentation_loader(task, "val", args, shuffle=False)
 
-    backbone = DINOv3Backbone(
-        repo_dir=args.dinov3_repo,
-        checkpoint_path=args.dinov3_checkpoint,
-        freeze=not args.unfreeze_backbone,
-    )
-    model = SingleTaskSegModel(backbone=backbone).to(device)
-    configure_task_training(model, task)
+    backbone, head = build_segmentation_train_stack(args, task, device)
+    trainable_params = [parameter for parameter in head.parameters() if parameter.requires_grad]
+    if args.unfreeze_backbone:
+        trainable_params.extend(
+            parameter for parameter in backbone.parameters() if parameter.requires_grad
+        )
 
-    trainable_params = [parameter for parameter in model.parameters() if parameter.requires_grad]
     optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, weight_decay=args.weight_decay)
     scheduler = make_lr_scheduler(optimizer, args)
     scaler = make_grad_scaler(use_amp)
@@ -232,10 +251,11 @@ def run_segmentation_training(
         dataset_info=collect_task_dataset_info(train_loader, val_loader),
         environment=collect_environment_info(device),
         model_info={
-            "model": model.__class__.__name__,
+            "backbone": backbone.__class__.__name__,
+            "head": head.__class__.__name__,
             "task": task,
             "backbone_frozen": not args.unfreeze_backbone,
-            **count_model_parameters(model),
+            **count_model_parameters(head),
         },
     )
     print(f"Training logs will be saved to: {args.output_dir}")
@@ -248,7 +268,8 @@ def run_segmentation_training(
     for epoch in range(1, args.epochs + 1):
         epoch_started = perf_counter()
         train_metrics = train_epoch(
-            model,
+            backbone,
+            head,
             train_loader,
             task,
             optimizer,
@@ -257,7 +278,7 @@ def run_segmentation_training(
             use_amp,
             args.limit_train_batches,
         )
-        task_metrics = validate_task(model, val_loader, task, device, args.limit_val_batches)
+        task_metrics = validate_task(backbone, head, val_loader, task, device, args.limit_val_batches)
         metrics = {**train_metrics, **task_metrics}
         metrics["val_dice"] = metrics[f"{task}_val_dice"]
         metrics["val_iou"] = metrics[f"{task}_val_iou"]
@@ -272,13 +293,13 @@ def run_segmentation_training(
             f"epoch={epoch:03d} | lr={metrics['learning_rate']:.2e} | {format_metrics(display_metrics)}"
         )
         save_checkpoint(
-            args.output_dir / "last.pt", model, optimizer, epoch, metrics, args, scheduler
+            args.output_dir / "last.pt", head, optimizer, epoch, metrics, args, scheduler
         )
         if is_best:
             best_score = score
             epochs_without_improvement = 0
             save_checkpoint(
-                args.output_dir / "best.pt", model, optimizer, epoch, metrics, args, scheduler
+                args.output_dir / "best.pt", head, optimizer, epoch, metrics, args, scheduler
             )
         else:
             epochs_without_improvement += 1
