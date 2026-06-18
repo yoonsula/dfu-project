@@ -17,8 +17,8 @@ python verify_setup.py
 
 # 3) 통합 inference (발 탐지 → 궤양 → DFU 분류)
 python infer.py \
-  --foot-head-checkpoint output/train/foot_20260617_141727/best.pt \
-  --wound-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
+  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
+  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
   --image /path/to/image.jpg \
   --image-size 384 \
   --device cuda
@@ -28,8 +28,8 @@ python infer.py \
 
 ```bash
 python app_gradio.py \
-  --foot-head-checkpoint output/train/foot_20260617_141727/best.pt \
-  --wound-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
+  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
+  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
   --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
   --image-size 384 \
   --device cuda
@@ -53,7 +53,7 @@ Input Image
             │
             └── [3] DFU Classification (DinoV3LinearClassifier)
                     ├── TS6_normal skin
-                    ├── diabetic wound
+                    ├── diabetic ulcer
                     └── other_injury
 ```
 
@@ -106,7 +106,13 @@ dfu-project/
 ├── infer_classification.py             # 분류 단독 inference
 ├── app_gradio.py                       # Gradio + FastRTC UI
 ├── verify_setup.py                     # 에셋 존재 확인
-├── train.py                            # 재학습 (데이터 별도 필요)
+├── trainers/
+│   ├── common.py                        # shared CLI + training utilities
+│   ├── segmentation.py                  # foot/wound segmentation loop
+│   ├── foot_trainer.py
+│   ├── wound_trainer.py
+│   └── dfu_trainer.py
+├── train.py                            # `--task` dispatcher
 ├── paths.py                            # 경로 기본값
 └── requirements.txt
 ```
@@ -117,8 +123,9 @@ dfu-project/
 
 ```bash
 python infer.py \
-  --foot-head-checkpoint output/train/foot_20260617_141727/best.pt \
-  --wound-head-checkpoint output/train/ulcer_20260617_142542/best.pt \
+  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
+  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
+  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
   --image /path/to/image_or_dir \
   --image-size 384 \
   --device cuda
@@ -168,7 +175,7 @@ pip install -r requirements.txt
 
 python app_gradio.py \
   --foot-head-checkpoint output/train/foot_head_v1/best.pt \
-  --wound-head-checkpoint output/train/ulcer_head_v1/best.pt \
+  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
   --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
   --display-max-size 512 \
   --device cuda \
@@ -194,6 +201,19 @@ python train.py \
   --batch-size 64 \
   --amp \
   --foot-augment
+```
+
+`train.py`는 `--task`에 따라 `trainers/` 아래 trainer로 위임합니다. segmentation foot/wound는 `trainers/segmentation.py`를 공유합니다.
+
+```bash
+python train.py --task foot ...
+python train.py --task wound ...
+python train.py --task dfu ...
+
+# 또는 trainer 직접 실행
+python -m trainers.foot_trainer ...
+python -m trainers.wound_trainer ...
+python -m trainers.dfu_trainer ...
 ```
 
 `train.py`는 cache 없이 이미지에서 frozen DINOv3 backbone을 실행한 뒤 선택한 task head만 학습합니다. `--task foot` 또는 `--task wound`를 각각 실행해 독립 head checkpoint를 만들 수 있습니다.
@@ -445,7 +465,7 @@ Input Image → DINOv3Backbone (ViT-S/16, 384-dim)
 Input Image → DINOv3 ViT-S/16 (HF, frozen) → CLS token → Linear(384→3)
 ```
 
-클래스: `TS6_normal skin`, `diabetic wound`, `other_injury`  
+클래스: `TS6_normal skin`, `diabetic ulcer`, `other_injury`  
 분류 val accuracy: **95.1%** (checkpoint epoch 10)
 
 ## Inference Gate Logic
