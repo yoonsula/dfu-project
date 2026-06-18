@@ -17,8 +17,8 @@ python verify_setup.py
 
 # 3) 통합 inference (발 탐지 → 궤양 → DFU 분류)
 python infer.py \
-  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
-  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
+  --foot-head-checkpoint checkpoints/foot_head_v1/best.pt \
+  --wound-head-checkpoint checkpoints/wound_head_v1/best.pt \
   --image /path/to/image.jpg \
   --image-size 384 \
   --device cuda
@@ -28,9 +28,9 @@ python infer.py \
 
 ```bash
 python app_gradio.py \
-  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
-  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
-  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
+  --foot-head-checkpoint checkpoints/foot_head_v1/best.pt \
+  --wound-head-checkpoint checkpoints/wound_head_v1/best.pt \
+  --dfu-head-checkpoint checkpoints/dfu_head_v1/best.pt \
   --image-size 384 \
   --device cuda
 # http://127.0.0.1:7861
@@ -86,7 +86,8 @@ dfu-project/
 │   └── dinov3-hf/
 │       └── dinov3-vits16-pretrain-lvd1689m/   # HF DINOv3 (classification)
 ├── checkpoints/
-│   ├── dinov3_linear_best_0.001.pt     # classification (inference)
+│   ├── dinov3_linear_best_0.001.pt     # legacy classification head
+│   └── {run_name}/                     # train.py default output (best.pt, last.pt, train_log.json)
 ├── models/
 │   ├── backbone.py                     # DINOv3 feature extractor
 │   ├── dfu_classifier.py               # DINOv3 + linear head
@@ -123,9 +124,9 @@ dfu-project/
 
 ```bash
 python infer.py \
-  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
-  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
-  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
+  --foot-head-checkpoint checkpoints/foot_head_v1/best.pt \
+  --wound-head-checkpoint checkpoints/wound_head_v1/best.pt \
+  --dfu-head-checkpoint checkpoints/dfu_head_v1/best.pt \
   --image /path/to/image_or_dir \
   --image-size 384 \
   --device cuda
@@ -158,9 +159,9 @@ Backbone을 freeze하고 task별 환경에서 head만 따로 학습한 경우에
 
 ```bash
 python infer.py \
-  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
-  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
-  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
+  --foot-head-checkpoint checkpoints/foot_head_v1/best.pt \
+  --wound-head-checkpoint checkpoints/wound_head_v1/best.pt \
+  --dfu-head-checkpoint checkpoints/dfu_head_v1/best.pt \
   --image /path/to/image_or_dir \
   --image-size 384 \
   --device cuda
@@ -174,9 +175,9 @@ python infer.py \
 pip install -r requirements.txt
 
 python app_gradio.py \
-  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
-  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
-  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
+  --foot-head-checkpoint checkpoints/foot_head_v1/best.pt \
+  --wound-head-checkpoint checkpoints/wound_head_v1/best.pt \
+  --dfu-head-checkpoint checkpoints/dfu_head_v1/best.pt \
   --display-max-size 512 \
   --device cuda \
   --amp
@@ -313,7 +314,7 @@ dfu_partA_20260617/others         -> other
 ```bash
 python train.py \
   --task foot \
-  --output-dir output/train \
+  --output-dir checkpoints \
   --run-name foot_head_v1 \
   --epochs 30 \
   --batch-size 64 \
@@ -322,7 +323,7 @@ python train.py \
 
 python train.py \
   --task wound \
-  --output-dir output/train \
+  --output-dir checkpoints \
   --run-name wound_head_v1 \
   --epochs 30 \
   --batch-size 64 \
@@ -333,8 +334,8 @@ python train.py \
 각 run은 `best.pt`와 `last.pt`를 저장합니다.
 
 ```text
-output/train/foot_head_v1/best.pt
-output/train/wound_head_v1/best.pt
+checkpoints/foot_head_v1/best.pt
+checkpoints/wound_head_v1/best.pt
 ```
 
 이 두 checkpoint는 `infer.py`에서 `--foot-head-checkpoint`, `--wound-head-checkpoint`로 함께 로드합니다.
@@ -356,7 +357,7 @@ output/train/wound_head_v1/best.pt
 python train.py \
   --task dfu \
   --dfu-root ../../03_데이터/dfu_classification_data \
-  --output-dir output/train \
+  --output-dir checkpoints \
   --run-name dfu_head_v1 \
   --image-size 384 \
   --epochs 10 \
@@ -369,18 +370,18 @@ python train.py \
 학습 결과:
 
 ```text
-output/train/dfu_head_v1/best.pt
-output/train/dfu_head_v1/last.pt
-output/train/dfu_head_v1/train_log.json
+checkpoints/dfu_head_v1/best.pt
+checkpoints/dfu_head_v1/last.pt
+checkpoints/dfu_head_v1/train_log.json
 ```
 
 저장된 `best.pt`는 `infer.py`의 `--dfu-head-checkpoint`에 바로 사용할 수 있습니다.
 
 ```bash
 python infer.py \
-  --foot-head-checkpoint output/train/foot_head_v1/best.pt \
-  --wound-head-checkpoint output/train/wound_head_v1/best.pt \
-  --dfu-head-checkpoint output/train/dfu_head_v1/best.pt \
+  --foot-head-checkpoint checkpoints/foot_head_v1/best.pt \
+  --wound-head-checkpoint checkpoints/wound_head_v1/best.pt \
+  --dfu-head-checkpoint checkpoints/dfu_head_v1/best.pt \
   --image /path/to/image_or_dir \
   --image-size 384 \
   --device cuda

@@ -46,6 +46,10 @@ DINOV3_HF_MODEL_DIR = _resolve_path(
 )
 
 CHECKPOINT_DIR = _resolve_path("DFU_CHECKPOINT_DIR", PROJECT_ROOT / "checkpoints")
+TRAIN_OUTPUT_DIR = _resolve_path(
+    "DFU_TRAIN_OUTPUT_DIR",
+    CHECKPOINT_DIR,
+)
 DEFAULT_CLASSIFICATION_CHECKPOINT = _resolve_path(
     "DFU_CLASSIFICATION_CHECKPOINT",
     CHECKPOINT_DIR / "dinov3_linear_best_0.001.pt",
@@ -54,11 +58,6 @@ DEFAULT_CLASSIFICATION_CHECKPOINT = _resolve_path(
 INFERENCE_OUTPUT_DIR = _resolve_path(
     "DFU_INFERENCE_OUTPUT_DIR",
     PROJECT_ROOT / "output" / "inference",
-)
-
-TRAIN_OUTPUT_DIR = _resolve_path(
-    "DFU_TRAIN_OUTPUT_DIR",
-    PROJECT_ROOT / "output" / "train",
 )
 
 # --- Training data (not bundled; override via .env when retraining) ---
