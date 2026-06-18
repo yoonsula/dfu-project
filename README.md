@@ -1,6 +1,6 @@
 # DFU Foot Analysis Pipeline
 
-당뇨발(DFU) 이미지 분석 파이프라인입니다. **발/궤양 세그멘테이션**과 **DFU 3-class 분류**를 하나의 프로젝트에서 실행할 수 있습니다.
+당뇨발(DFU) 이미지 분석 파이프라인입니다. **발/궤양 세그멘테이션**과 **DFU binary 분류**를 하나의 프로젝트에서 실행할 수 있습니다.
 
 > **재학습(train.py)** 은 별도 학습 데이터가 필요합니다.
 
@@ -13,12 +13,13 @@ conda activate dfu-venv
 pip install -r requirements.txt
 
 # 2) 에셋 확인
-python verify_setup.py
+python scripts/verify_setup.py
 
 # 3) 통합 inference (발 탐지 → 궤양 → DFU 분류)
 python infer.py \
   --foot-head-checkpoint checkpoints/foot_head_v1/best.pt \
   --wound-head-checkpoint checkpoints/wound_head_v1/best.pt \
+  --dfu-head-checkpoint checkpoints/dfu_head_v1/best.pt \
   --image /path/to/image.jpg \
   --image-size 384 \
   --device cuda
@@ -51,25 +52,23 @@ Input Image
             │
             ├── [2] Wound: foot 중앙 정렬까지 만족 시 활성화
             │
-            └── [3] DFU Classification (DinoV3LinearClassifier)
-                    ├── TS6_normal skin
-                    ├── diabetic ulcer
-                    └── other_injury
+            └── [3] DFU Classification (DFUFeatureClassifierHead)
+                    ├── dfu
+                    └── other
 ```
 
 | 단계 | 모델 | 게이트 조건 |
 |------|------|-------------|
 | Foot mask | foot head checkpoint | foot area ratio ∈ [0.08, 0.5] |
 | Wound mask | wound head checkpoint | foot 탐지 + 화면 중앙 ±0.25 |
-| DFU 분류 | `checkpoints/dinov3_linear_best_0.001.pt` | **foot 탐지 시** |
+| DFU 분류 | `--dfu-head-checkpoint` (shared backbone feature) | **foot 탐지 시** |
 
 ## Bundled Assets
 
 | 경로 | 용도 | 크기(약) |
 |------|------|----------|
-| `checkpoints/dinov3_linear_best_0.001.pt` | DFU 3-class 분류 head | 83 MB |
-| `assets/dinov3/` | Meta DINOv3 repo + ViT-S backbone (세그멘테이션) | 85 MB |
-| `assets/dinov3-hf/` | HuggingFace DINOv3 (분류 backbone) | 165 MB |
+| `assets/dinov3/` | Meta DINOv3 repo + ViT-S backbone (세그멘테이션 + 분류 feature) | 85 MB |
+| `checkpoints/{run_name}/` | 학습된 head checkpoint (`best.pt`, `last.pt`) | task별 상이 |
 
 외부 경로(`../dinov3`, `../dfu-classification` 등) 없이 **프로젝트 내부 경로만** 사용합니다.  
 경로 변경이 필요하면 `.env.example` → `.env` 복사 후 수정하거나 `paths.py`의 환경 변수를 사용하세요.
@@ -79,40 +78,44 @@ Input Image
 ```
 dfu-project/
 ├── assets/
-│   ├── dinov3/                         # Meta DINOv3 (segmentation backbone)
-│   │   ├── dinov3/
-│   │   ├── hubconf.py
-│   │   └── checkpoint/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
-│   └── dinov3-hf/
-│       └── dinov3-vits16-pretrain-lvd1689m/   # HF DINOv3 (classification)
+│   └── dinov3/                         # Meta DINOv3 (shared backbone)
+│       ├── dinov3/
+│       ├── hubconf.py
+│       └── checkpoint/dinov3_vits16_pretrain_lvd1689m-08c60483.pth
 ├── checkpoints/
-│   ├── dinov3_linear_best_0.001.pt     # legacy classification head
 │   └── {run_name}/                     # train.py default output (best.pt, last.pt, train_log.json)
 ├── models/
 │   ├── backbone.py                     # DINOv3 feature extractor
-│   ├── dfu_classifier.py               # DINOv3 + linear head
-│   ├── fastinst_head.py                 # shared segmentation head block
+│   ├── dfu_feature_head.py             # shared-feature DFU classifier head
+│   ├── fastinst_head.py                # shared segmentation head block
 │   ├── foot_head.py / wound_head.py
 │   └── pipeline_model.py               # inference assembly (backbone + heads)
 ├── datasets/
-│   ├── catalog.py                       # training data source list
-│   ├── source_loaders.py                # COCO / FUSeg / Wound loaders
-│   ├── samples.py                       # SegmentationSample
+│   ├── catalog.py                      # training data source list
+│   ├── source_loaders.py               # COCO / FUSeg / Wound loaders
+│   ├── samples.py                      # SegmentationSample
 │   └── diabetic_foot_dataset.py
-├── data/loaders.py                      # DataLoader factory
-├── cli/dataset_args.py                  # shared dataset CLI flags
-├── inference/pipeline.py                # staged foot → wound inference
-├── utils/                               # runtime / image helpers
-├── infer.py                            # 통합 inference (seg + classification)
-├── infer_classification.py             # 분류 단독 inference
-├── app_gradio.py                       # Gradio + FastRTC UI
-├── verify_setup.py                     # 에셋 존재 확인
+├── data/loaders.py                     # DataLoader factory
+├── cli/dataset_args.py                 # shared dataset CLI flags
+├── inference/
+│   ├── checkpoints.py                  # pipeline / head checkpoint loading
+│   ├── classification.py               # DFU head classification
+│   └── pipeline.py                     # staged foot → wound inference
 ├── trainers/
-│   ├── common.py                        # shared CLI + training utilities
-│   ├── segmentation.py                  # foot/wound segmentation loop
+│   ├── common.py                       # shared CLI + training utilities
+│   ├── losses.py                       # segmentation loss / metrics
+│   ├── training_log.py                 # run logging helpers
+│   ├── segmentation.py                 # foot/wound segmentation loop
 │   ├── foot_trainer.py
 │   ├── wound_trainer.py
 │   └── dfu_trainer.py
+├── scripts/
+│   ├── verify_setup.py                 # 에셋 존재 확인
+│   ├── prepare_dfu_classification_data.py
+│   └── export_augmented_foot_coco.py
+├── utils/                              # runtime / image helpers
+├── infer.py                            # 통합 inference CLI
+├── app_gradio.py                       # Gradio + FastRTC UI
 ├── train.py                            # `--task` dispatcher
 ├── paths.py                            # 경로 기본값
 └── requirements.txt
@@ -145,12 +148,6 @@ Wound head는 기본적으로 탐지된 foot mask의 bbox에 `--wound-crop-margi
 
 ```bash
 python infer.py ... --no-classification
-```
-
-### 분류만
-
-```bash
-python infer_classification.py --image /path/to/image.jpg
 ```
 
 ### Shared backbone + separate head checkpoints
@@ -497,7 +494,7 @@ pip install -r requirements.txt
 
 | 증상 | 확인 |
 |------|------|
-| `DINOv3 repo not found` | `python verify_setup.py` 실행, `assets/dinov3/` 존재 확인 |
-| `Classification checkpoint not found` | `checkpoints/dinov3_linear_best_0.001.pt` 확인 |
+| `DINOv3 repo not found` | `python scripts/verify_setup.py` 실행, `assets/dinov3/` 존재 확인 |
+| `DFU head checkpoint not found` | `--dfu-head-checkpoint` 경로 확인 또는 `--no-classification` 사용 |
 | OOM (WSL) | `--num-workers 0`, `--image-size 384` 유지 |
 | inference 속도 | 학습 해상도와 `--image-size` 일치 (384) |

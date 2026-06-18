@@ -16,12 +16,9 @@ from PIL import Image
 from inference.pipeline import SegmentationConfig
 from inference.pipeline import render_overlay
 from inference.pipeline import run_gated_segmentation
-from infer import (
-    classify_shared_features,
-    load_dfu_head_bundle,
-    load_model,
-    resolve_image_size_from_checkpoint,
-)
+from infer import load_model
+from inference.checkpoints import resolve_image_size_from_checkpoint
+from inference.classification import classify_shared_features, load_dfu_head_bundle
 from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
 from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
 from utils.runtime import resolve_device

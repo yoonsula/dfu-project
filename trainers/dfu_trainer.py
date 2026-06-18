@@ -16,7 +16,7 @@ from cli.dataset_args import add_dataset_args
 from datasets import ClassificationImageDataset
 from models import DINOv3Backbone, DFUFeatureClassifierHead
 from paths import DEFAULT_DFU_CLASSIFICATION_DATA_ROOT
-from training_log import (
+from trainers.training_log import (
     TrainingLogger,
     collect_environment_info,
     count_model_parameters,

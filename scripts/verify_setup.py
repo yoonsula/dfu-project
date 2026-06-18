@@ -5,20 +5,17 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from paths import (
-    DEFAULT_CLASSIFICATION_CHECKPOINT,
-    DINOV3_CHECKPOINT,
-    DINOV3_HF_MODEL_DIR,
-    DINOV3_REPO,
-)
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+from paths import DINOV3_CHECKPOINT, DINOV3_REPO
 
 
 def main() -> int:
     required = [
-        ("Classification checkpoint", DEFAULT_CLASSIFICATION_CHECKPOINT),
         ("DINOv3 repo (segmentation)", DINOV3_REPO),
         ("DINOv3 backbone weights", DINOV3_CHECKPOINT),
-        ("DINOv3 HF model (classification)", DINOV3_HF_MODEL_DIR),
     ]
     missing: list[tuple[str, Path]] = []
     for label, path in required:

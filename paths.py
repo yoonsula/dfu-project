@@ -40,19 +40,10 @@ DINOV3_CHECKPOINT = _resolve_path(
     DINOV3_REPO / "checkpoint" / _DINOV3_CHECKPOINT_NAME,
 )
 
-DINOV3_HF_MODEL_DIR = _resolve_path(
-    "DINOV3_HF_MODEL_DIR",
-    ASSETS_DIR / "dinov3-hf" / "dinov3-vits16-pretrain-lvd1689m",
-)
-
 CHECKPOINT_DIR = _resolve_path("DFU_CHECKPOINT_DIR", PROJECT_ROOT / "checkpoints")
 TRAIN_OUTPUT_DIR = _resolve_path(
     "DFU_TRAIN_OUTPUT_DIR",
     CHECKPOINT_DIR,
-)
-DEFAULT_CLASSIFICATION_CHECKPOINT = _resolve_path(
-    "DFU_CLASSIFICATION_CHECKPOINT",
-    CHECKPOINT_DIR / "dinov3_linear_best_0.001.pt",
 )
 
 INFERENCE_OUTPUT_DIR = _resolve_path(

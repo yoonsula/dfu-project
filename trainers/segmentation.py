@@ -11,9 +11,9 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from data.loaders import make_loader as make_segmentation_loader
-from losses import binary_segmentation_metrics, segmentation_loss
+from trainers.losses import binary_segmentation_metrics, segmentation_loss
 from models import DINOv3Backbone, FastInstFootHead, FastInstWoundHead
-from training_log import (
+from trainers.training_log import (
     TrainingLogger,
     collect_dataset_stats,
     collect_environment_info,
