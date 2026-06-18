@@ -85,7 +85,7 @@ feature map [B, 384, H/16, W/16]
   → dfu / other
 ```
 
-`DFUFeatureClassifierHead`는 `--dfu-head-type linear|mlp`로 학습하며, checkpoint의 `head_state_dict`를 `infer.py --dfu-head-checkpoint`로 로드합니다.
+`DFUFeatureClassifierHead`는 `--head-type linear|mlp`로 학습하며, checkpoint의 `head_state_dict`를 `infer.py --dfu-head-checkpoint`로 로드합니다.
 
 참고 run (`dfu_head_v1`, linear, image_size=384): val accuracy **98.8%**, val F1 **97.8%** (epoch 16).
 
@@ -95,8 +95,7 @@ feature map [B, 384, H/16, W/16]
 
 | 환경 변수 | 기본값 | 용도 |
 |-----------|--------|------|
-| `DINOV3_REPO` | `assets/dinov3` | Meta DINOv3 repo |
-| `DINOV3_CHECKPOINT` | `assets/dinov3/checkpoint/...pth` | backbone weights |
+| `DINOV3_MODEL_PATH` | `assets/dinov3-hf` | 로컬 HF DINOv3 ViT-S/16 스냅샷 (`config.json` + weights) |
 | `DFU_CHECKPOINT_DIR` | `checkpoints/` | 학습 checkpoint 루트 |
 | `DFU_TRAIN_OUTPUT_DIR` | `checkpoints/` | `train.py` 기본 `--output-dir` |
 | `DFU_INFERENCE_OUTPUT_DIR` | `output/inference/` | `infer.py` 출력 |
@@ -106,7 +105,7 @@ feature map [B, 384, H/16, W/16]
 
 | 경로 | 용도 |
 |------|------|
-| `assets/dinov3/` | Meta DINOv3 repo + ViT-S backbone weights |
+| `assets/dinov3-hf/` | 로컬 DINOv3 backbone HF 스냅샷 (`DINOV3_MODEL_PATH`) |
 | `checkpoints/{run_name}/` | 학습된 head (`best.pt`, `last.pt`, `train_log.json`) |
 | `output/inference/` | inference 마스크·overlay·JSON |
 
@@ -114,7 +113,7 @@ feature map [B, 384, H/16, W/16]
 
 ```
 dfu-project/
-├── assets/dinov3/                      # shared frozen backbone
+├── assets/dinov3-hf/                   # local HF backbone snapshot (DINOV3_MODEL_PATH)
 ├── checkpoints/{run_name}/             # train output (default)
 ├── output/inference/                   # infer.py output
 ├── models/
@@ -142,7 +141,11 @@ dfu-project/
 ├── scripts/
 │   ├── verify_setup.py
 │   ├── prepare_dfu_classification_data.py
-│   └── export_augmented_foot_coco.py
+│   ├── export_augmented_foot_coco.py
+│   └── evaluate.py                     # test set evaluation
+├── eval/
+│   ├── sample_loaders.py
+│   └── runners.py
 ├── example/backbone_features.ipynb
 ├── infer.py                            # CLI inference
 ├── app_gradio.py                       # Gradio + FastRTC UI
@@ -215,10 +218,10 @@ python -m trainers.wound_trainer ...
 python -m trainers.dfu_trainer ...
 ```
 
-**공통 기본값** (`trainers/common.py`): `--image-size 768`, `--epochs 10`, `--batch-size 8`, `--output-dir checkpoints/`.  
+**공통 기본값** (`trainers/common.py`): foot/wound는 `--image-size 384`, `--batch-size 32`, `--lr 5e-4`.  
 `--run-name`을 생략하면 `checkpoints/{timestamp}/`에 저장됩니다.
 
-> foot / wound / dfu head는 inference에서 같은 backbone feature를 공유하므로, **세 task 모두 동일한 `--image-size`(권장 384)와 DINOv3 checkpoint**를 사용하세요.
+> foot / wound / dfu head는 inference에서 같은 backbone feature를 공유하므로, **세 task 모두 동일한 `--image-size`(권장 384)와 `DINOV3_MODEL_PATH`**를 사용하세요.
 
 ### 학습 데이터 경로
 
@@ -244,7 +247,6 @@ python train.py \
   --epochs 30 \
   --batch-size 64 \
   --amp \
-  --foot-augment \
   --device cuda
 
 python train.py \
@@ -301,23 +303,20 @@ python train.py \
   --dfu-root ../../03_데이터/dfu_classification_data \
   --run-name dfu_head_v1 \
   --image-size 384 \
-  --epochs 10 \
-  --dfu-batch-size 32 \
-  --dfu-lr 5e-3 \
-  --dfu-head-type linear \
-  --dfu-best-metric f1 \
-  --class-weight none \
+  --epochs 30 \
+  --batch-size 32 \
+  --lr 5e-4 \
   --device cuda \
   --amp
 ```
 
-| 옵션 | 기본값 | 설명 |
-|------|--------|------|
-| `--dfu-head-type` | `linear` | `linear` 또는 `mlp` |
-| `--dfu-lr` | `5e-3` | head optimizer LR |
-| `--dfu-batch-size` | `32` | classification batch size |
+| 옵션 | dfu 기본값 | 설명 |
+|------|------------|------|
+| `--head-type` | `linear` | `linear` 또는 `mlp` |
+| `--lr` | `5e-3` | head optimizer LR |
+| `--batch-size` | `32` | classification batch size |
 | `--class-weight` | `none` | `balanced`로 inverse-frequency 가중치 |
-| `--dfu-best-metric` | `f1` | `best.pt` 선택 기준 (`accuracy` 가능) |
+| `--best-metric` | `f1` | `best.pt` 선택 기준 (`accuracy` 가능) |
 | `--warmup-ratio` | `0.1` | cosine scheduler warmup |
 
 출력:
@@ -328,6 +327,42 @@ checkpoints/dfu_head_v1/train_log.json
 ```
 
 `best.pt`는 `infer.py --dfu-head-checkpoint`에 바로 사용합니다.
+
+## Evaluation (Test Set)
+
+`scripts/evaluate.py`로 학습된 head checkpoint의 hold-out 성능을 확인합니다.
+
+| Task | 입력 | 평가 지표 |
+|------|------|-----------|
+| foot | `--data-root` (COCO) | dice, iou, accuracy |
+| wound | `--image-dir` + `--mask-dir` | dice, iou, accuracy |
+| dfu | `--data-root` (`dfu/`, `other/` 하위 폴더) | accuracy, precision, recall, f1 |
+
+```bash
+# Foot (COCO)
+python scripts/evaluate.py \
+  --task foot \
+  --checkpoint checkpoints/foot_head_v1/best.pt \
+  --data-root /path/to/coco-foot-test \
+  --device cuda
+
+# Wound (image + mask folders)
+python scripts/evaluate.py \
+  --task wound \
+  --checkpoint checkpoints/wound_head_v1/best.pt \
+  --image-dir /path/to/images \
+  --mask-dir /path/to/masks \
+  --device cuda
+
+# DFU classification (ImageFolder root — e.g. test split folder)
+python scripts/evaluate.py \
+  --task dfu \
+  --checkpoint checkpoints/dfu_head_v1/best.pt \
+  --data-root ../../03_데이터/dfu_classification_data/test \
+  --device cuda
+```
+
+`--output-json report.json`으로 전체 리포트를 저장할 수 있습니다.
 
 ## Dataset Acknowledgments
 
@@ -423,7 +458,7 @@ pip install -r requirements.txt
 
 | 증상 | 확인 |
 |------|------|
-| `DINOv3 repo not found` | `python scripts/verify_setup.py`, `assets/dinov3/` 존재 |
+| DINOv3 backbone load 실패 | `python scripts/verify_setup.py`, `assets/dinov3-hf/`에 HF 스냅샷 존재, `transformers>=4.56` |
 | `DFU head checkpoint not found` | `--dfu-head-checkpoint` 경로 또는 `--no-classification` |
 | head key mismatch warning | 구 checkpoint prefix (`ulcer_head.` 등) — non-strict 로드, 동작 확인 |
 | OOM (WSL) | `--num-workers 0`, `--image-size 384` |

@@ -40,8 +40,7 @@ def build_segmentation_train_stack(
     device: torch.device,
 ) -> tuple[DINOv3Backbone, nn.Module]:
     backbone = DINOv3Backbone(
-        repo_dir=args.dinov3_repo,
-        checkpoint_path=args.dinov3_checkpoint,
+        model_path=args.dinov3_model,
         freeze=not args.unfreeze_backbone,
     ).to(device)
     head = build_segmentation_head(task).to(device)
@@ -180,9 +179,6 @@ def validate_task(
         f"{task}_val_dice": total_dice / denom,
         f"{task}_val_iou": total_iou / denom,
         f"{task}_val_accuracy": total_accuracy / denom,
-        f"{task}_dice": total_dice / denom,
-        f"{task}_iou": total_iou / denom,
-        f"{task}_accuracy": total_accuracy / denom,
     }
 
 

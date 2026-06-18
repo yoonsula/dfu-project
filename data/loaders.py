@@ -27,10 +27,6 @@ def make_loader(
         val_ratio=args.val_ratio,
         val_negative_ratio=args.val_negative_ratio if task == "foot" else 0.0,
         seed=args.seed,
-        augment=bool(task == "foot" and split == "train" and args.foot_augment),
-        scale_min=args.foot_scale_min,
-        scale_max=args.foot_scale_max,
-        hflip_prob=args.foot_hflip_prob,
         negative_oversample=args.negative_oversample if task == "foot" else 1,
         neg_sample_weight=args.neg_loss_weight if task == "foot" else 1.0,
     )

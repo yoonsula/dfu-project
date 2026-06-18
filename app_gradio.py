@@ -19,8 +19,7 @@ from inference.pipeline import run_gated_segmentation
 from infer import load_model
 from inference.checkpoints import resolve_image_size_from_checkpoint
 from inference.classification import classify_shared_features, load_dfu_head_bundle
-from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
-from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
+from paths import DINOV3_MODEL_PATH as DEFAULT_DINOV3_MODEL_PATH
 from utils.runtime import resolve_device
 UI_REFRESH_SEC = 0.5
 
@@ -29,8 +28,7 @@ UI_REFRESH_SEC = 0.5
 class RuntimeConfig:
     foot_head_checkpoint: Path
     wound_head_checkpoint: Path
-    dinov3_repo: Path
-    dinov3_checkpoint: Path
+    dinov3_model: Path
     image_size: int
     display_max_size: int
     device_name: str
@@ -57,8 +55,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Launch DFU segmentation Gradio app (WebRTC).")
     parser.add_argument("--foot-head-checkpoint", type=Path, required=True)
     parser.add_argument("--wound-head-checkpoint", type=Path, required=True)
-    parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
-    parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
+    parser.add_argument(
+        "--dinov3-model",
+        type=Path,
+        default=DEFAULT_DINOV3_MODEL_PATH,
+        help="Local Hugging Face snapshot directory for the frozen DINOv3 ViT-S/16 backbone.",
+    )
     parser.add_argument(
         "--image-size",
         type=int,
@@ -156,8 +158,7 @@ class RealtimeDFUSegmenter:
         return argparse.Namespace(
             foot_head_checkpoint=config.foot_head_checkpoint,
             wound_head_checkpoint=config.wound_head_checkpoint,
-            dinov3_repo=config.dinov3_repo,
-            dinov3_checkpoint=config.dinov3_checkpoint,
+            dinov3_model=config.dinov3_model,
         )
 
     @staticmethod
@@ -557,8 +558,7 @@ def main() -> None:
     config = RuntimeConfig(
         foot_head_checkpoint=args.foot_head_checkpoint,
         wound_head_checkpoint=args.wound_head_checkpoint,
-        dinov3_repo=args.dinov3_repo,
-        dinov3_checkpoint=args.dinov3_checkpoint,
+        dinov3_model=args.dinov3_model,
         image_size=image_size,
         display_max_size=args.display_max_size,
         device_name=args.device,

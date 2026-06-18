@@ -12,7 +12,6 @@ from torch.optim.lr_scheduler import LRScheduler
 from torch.utils.data import DataLoader
 from transformers import get_cosine_schedule_with_warmup
 
-from cli.dataset_args import add_dataset_args
 from datasets import ClassificationImageDataset
 from models import DINOv3Backbone, DFUFeatureClassifierHead
 from paths import DEFAULT_DFU_CLASSIFICATION_DATA_ROOT
@@ -36,8 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Train the DFU classification head on shared frozen DINOv3 features.",
     )
-    add_dataset_args(parser)
-    add_common_args(parser)
+    add_common_args(parser, default_batch_size=32, default_lr=5.0e-4)
     parser.add_argument(
         "--dfu-root",
         type=Path,
@@ -45,26 +43,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Binary ImageFolder root for DFU classification.",
     )
     parser.add_argument(
-        "--dfu-head-type",
+        "--head-type",
         type=str,
         choices=("linear", "mlp"),
         default="linear",
-        help="DFU head architecture. 'linear' matches the notebook-style frozen backbone classifier.",
+        help="Classification head architecture. 'linear' matches the notebook-style frozen backbone classifier.",
     )
-    parser.add_argument("--hidden-dim", type=int, default=256, help="Hidden size for --dfu-head-type mlp.")
-    parser.add_argument("--dropout", type=float, default=0.2, help="Dropout for --dfu-head-type mlp.")
-    parser.add_argument(
-        "--dfu-lr",
-        type=float,
-        default=5.0e-3,
-        help="Learning rate for DFU head training. Notebook default was 5e-3.",
-    )
-    parser.add_argument(
-        "--dfu-batch-size",
-        type=int,
-        default=32,
-        help="Batch size for DFU head training. Notebook default was 32.",
-    )
+    parser.add_argument("--hidden-dim", type=int, default=256, help="Hidden size for --head-type mlp.")
+    parser.add_argument("--dropout", type=float, default=0.2, help="Dropout for --head-type mlp.")
     parser.add_argument(
         "--class-weight",
         choices=("none", "balanced"),
@@ -78,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Warmup ratio for the per-step cosine scheduler.",
     )
     parser.add_argument(
-        "--dfu-best-metric",
+        "--best-metric",
         type=str,
         choices=("accuracy", "f1"),
         default="f1",
@@ -234,8 +220,6 @@ def validate_dfu(
         "dfu_val_precision": averaged["precision"],
         "dfu_val_recall": averaged["recall"],
         "dfu_val_f1": averaged["f1"],
-        "dfu_accuracy": averaged["accuracy"],
-        "dfu_f1": averaged["f1"],
     }
 
 
@@ -261,7 +245,7 @@ def save_dfu_checkpoint(
         "feature_dim": 384,
         "hidden_dim": args.hidden_dim,
         "dropout": args.dropout,
-        "head_type": args.dfu_head_type,
+        "head_type": args.head_type,
     }
     if scheduler is not None:
         payload["scheduler"] = scheduler.state_dict()
@@ -283,7 +267,7 @@ def make_classification_loader(
     )
     return DataLoader(
         dataset,
-        batch_size=args.dfu_batch_size,
+        batch_size=args.batch_size,
         shuffle=shuffle,
         num_workers=args.num_workers,
         pin_memory=args.pin_memory,
@@ -372,8 +356,7 @@ def train(args: argparse.Namespace) -> None:
     val_loader = make_classification_loader("val", args, shuffle=False)
 
     backbone = DINOv3Backbone(
-        repo_dir=args.dinov3_repo,
-        checkpoint_path=args.dinov3_checkpoint,
+        model_path=args.dinov3_model,
         freeze=True,
     ).to(device)
     head = DFUFeatureClassifierHead(
@@ -381,10 +364,10 @@ def train(args: argparse.Namespace) -> None:
         hidden_dim=args.hidden_dim,
         num_classes=len(DFU_CLASSES),
         dropout=args.dropout,
-        head_type=args.dfu_head_type,
+        head_type=args.head_type,
     ).to(device)
 
-    optimizer = torch.optim.AdamW(head.parameters(), lr=args.dfu_lr, weight_decay=args.weight_decay)
+    optimizer = torch.optim.AdamW(head.parameters(), lr=args.lr, weight_decay=args.weight_decay)
     scheduler = make_dfu_lr_scheduler(optimizer, train_loader, args)
     scaler = make_grad_scaler(use_amp)
     class_weights = (
@@ -392,7 +375,7 @@ def train(args: argparse.Namespace) -> None:
         if args.class_weight == "balanced"
         else None
     )
-    best_metric_name = "dfu_val_accuracy" if args.dfu_best_metric == "accuracy" else "dfu_val_f1"
+    best_metric_name = "dfu_val_accuracy" if args.best_metric == "accuracy" else "dfu_val_f1"
 
     logger = TrainingLogger(args.output_dir)
     logger.write_initial_artifacts(
@@ -402,7 +385,7 @@ def train(args: argparse.Namespace) -> None:
         model_info={
             "backbone": backbone.__class__.__name__,
             "head": head.__class__.__name__,
-            "head_type": args.dfu_head_type,
+            "head_type": args.head_type,
             "task": TASK,
             "classes": DFU_CLASSES,
             "backbone_frozen": True,
@@ -411,8 +394,8 @@ def train(args: argparse.Namespace) -> None:
     )
     print(f"Training logs will be saved to: {args.output_dir}")
     print(
-        f"dfu profile: head={args.dfu_head_type} lr={args.dfu_lr} "
-        f"batch={args.dfu_batch_size} best_metric={args.dfu_best_metric}"
+        f"dfu profile: head={args.head_type} lr={args.lr} "
+        f"batch={args.batch_size} best_metric={args.best_metric}"
     )
     if class_weights is not None:
         print(f"class_weights={class_weights.detach().cpu().tolist()}")

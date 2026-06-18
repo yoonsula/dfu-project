@@ -27,17 +27,12 @@ def _resolve_path(env_key: str, default: Path, fallback_env_key: str | None = No
     return path.resolve()
 
 
-# --- Inference assets (bundled under assets/ + checkpoints/) ---
+# --- Inference assets (local Hugging Face backbone snapshot + head checkpoints) ---
 
-DINOV3_REPO = _resolve_path("DINOV3_REPO", ASSETS_DIR / "dinov3")
-
-_DINOV3_CHECKPOINT_NAME = os.environ.get(
-    "DINOV3_CHECKPOINT_NAME",
-    "dinov3_vits16_pretrain_lvd1689m-08c60483.pth",
-)
-DINOV3_CHECKPOINT = _resolve_path(
-    "DINOV3_CHECKPOINT",
-    DINOV3_REPO / "checkpoint" / _DINOV3_CHECKPOINT_NAME,
+DINOV3_MODEL_PATH = _resolve_path(
+    "DINOV3_MODEL_PATH",
+    ASSETS_DIR / "dinov3-hf",
+    fallback_env_key="DINOV3_MODEL_ID",
 )
 
 CHECKPOINT_DIR = _resolve_path("DFU_CHECKPOINT_DIR", PROJECT_ROOT / "checkpoints")

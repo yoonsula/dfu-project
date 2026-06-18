@@ -38,11 +38,6 @@ def add_dataset_args(parser: argparse.ArgumentParser) -> None:
         action="store_true",
         help="Exclude Wound Image Dataset (wound_main/wound_mask + Nomal negatives).",
     )
-    parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--foot-augment", action="store_true")
-    parser.add_argument("--foot-scale-min", type=float, default=1.5)
-    parser.add_argument("--foot-scale-max", type=float, default=2.5)
-    parser.add_argument("--foot-hflip-prob", type=float, default=0.5)
     parser.add_argument("--val-ratio", type=float, default=0.1, help="Foot roboflow positive val ratio.")
     parser.add_argument(
         "--val-negative-ratio",

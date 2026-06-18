@@ -21,8 +21,7 @@ from inference.pipeline import run_gated_segmentation
 from inference.pipeline import render_overlay
 from models import DFUPipelineModel
 from paths import INFERENCE_OUTPUT_DIR as DEFAULT_OUTPUT_DIR
-from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
-from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
+from paths import DINOV3_MODEL_PATH as DEFAULT_DINOV3_MODEL_PATH
 from utils.image_io import iter_images
 from utils.runtime import resolve_device
 
@@ -88,8 +87,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--image", type=Path, required=True, help="Input image file or directory.")
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
-    parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
+    parser.add_argument(
+        "--dinov3-model",
+        type=Path,
+        default=DEFAULT_DINOV3_MODEL_PATH,
+        help="Local Hugging Face snapshot directory for the frozen DINOv3 ViT-S/16 backbone.",
+    )
     parser.add_argument(
         "--image-size",
         type=int,
@@ -139,8 +142,7 @@ def load_model(args: argparse.Namespace, device: torch.device) -> DFUPipelineMod
     return load_pipeline_model(
         foot_head_checkpoint=args.foot_head_checkpoint,
         wound_head_checkpoint=args.wound_head_checkpoint,
-        dinov3_repo=args.dinov3_repo,
-        dinov3_checkpoint=args.dinov3_checkpoint,
+        dinov3_model=args.dinov3_model,
         device=device,
     )
 

@@ -50,8 +50,31 @@ def load_coco_samples(
     return samples
 
 
+def load_image_mask_pairs(image_dir: Path, mask_dir: Path) -> list[SegmentationSample]:
+    """Load paired image/mask files matched by filename stem."""
+    if not image_dir.is_dir():
+        raise FileNotFoundError(f"Image directory not found: {image_dir}")
+    if not mask_dir.is_dir():
+        raise FileNotFoundError(f"Mask directory not found: {mask_dir}")
+
+    mask_by_stem = {path.stem: path for path in sorted(mask_dir.iterdir()) if path.is_file()}
+    samples: list[SegmentationSample] = []
+    for image_path in sorted(path for path in image_dir.iterdir() if path.is_file()):
+        if image_path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        mask_path = mask_by_stem.get(image_path.stem)
+        if mask_path is not None:
+            samples.append(SegmentationSample(image_path=image_path, mask_path=mask_path))
+    return samples
+
+
 def load_fuseg_samples(root: Path, split: str) -> list[SegmentationSample]:
-    split_dir = "validation" if split == "val" else "train"
+    if split in ("val", "validation"):
+        split_dir = "validation"
+    elif split == "test":
+        split_dir = "test"
+    else:
+        split_dir = "train"
     image_dir = root / split_dir / "images"
     label_dir = root / split_dir / "labels"
     if not image_dir.exists() or not label_dir.exists():

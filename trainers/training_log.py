@@ -56,8 +56,7 @@ def collect_dataset_info(
             "humanbody_root": str(args.humanbody_root),
             "wound_root": str(args.wound_root),
             "wound_image_root": None if args.no_wound_image else str(args.wound_image_root),
-            "dinov3_repo": str(args.dinov3_repo),
-            "dinov3_checkpoint": str(args.dinov3_checkpoint),
+            "dinov3_model": str(args.dinov3_model),
         },
         "splits": {
             "foot_train": collect_dataset_stats(foot_train.dataset, foot_train),

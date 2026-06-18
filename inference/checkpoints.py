@@ -6,8 +6,7 @@ from pathlib import Path
 import torch
 
 from models import DFUPipelineModel, DINOv3Backbone
-from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
-from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
+from paths import DINOV3_MODEL_PATH as DEFAULT_DINOV3_MODEL_PATH
 
 DEFAULT_IMAGE_SIZE = 384
 
@@ -64,13 +63,11 @@ def load_pipeline_model(
     *,
     foot_head_checkpoint: Path | None,
     wound_head_checkpoint: Path | None,
-    dinov3_repo: Path = DEFAULT_DINOV3_REPO,
-    dinov3_checkpoint: Path = DEFAULT_DINOV3_CHECKPOINT,
+    dinov3_model: Path = DEFAULT_DINOV3_MODEL_PATH,
     device: torch.device,
 ) -> DFUPipelineModel:
     backbone = DINOv3Backbone(
-        repo_dir=dinov3_repo,
-        checkpoint_path=dinov3_checkpoint,
+        model_path=dinov3_model,
         freeze=True,
     )
     model = DFUPipelineModel(backbone=backbone).to(device)

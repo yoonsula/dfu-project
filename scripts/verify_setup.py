@@ -1,4 +1,4 @@
-"""Check that bundled models and assets are present before inference."""
+"""Check that the local Hugging Face DINOv3 backbone snapshot can be loaded."""
 
 from __future__ import annotations
 
@@ -9,28 +9,31 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from paths import DINOV3_CHECKPOINT, DINOV3_REPO
+from paths import DINOV3_MODEL_PATH
 
 
 def main() -> int:
-    required = [
-        ("DINOv3 repo (segmentation)", DINOV3_REPO),
-        ("DINOv3 backbone weights", DINOV3_CHECKPOINT),
-    ]
-    missing: list[tuple[str, Path]] = []
-    for label, path in required:
-        if not path.exists():
-            missing.append((label, path))
-
-    if missing:
-        print("Missing required assets:")
-        for label, path in missing:
-            print(f"  - {label}: {path}")
+    print(f"Checking DINOv3 backbone: {DINOV3_MODEL_PATH}")
+    if not DINOV3_MODEL_PATH.exists():
+        print(
+            "Missing local model directory. Expected a Hugging Face snapshot with "
+            "config.json and model weights."
+        )
         return 1
 
-    print("All required assets are present.")
-    for label, path in required:
-        print(f"  OK  {label}: {path}")
+    try:
+        from models import DINOv3Backbone
+
+        backbone = DINOv3Backbone(model_path=DINOV3_MODEL_PATH, freeze=True)
+        backbone.eval()
+    except Exception as exc:
+        print(f"Failed to load backbone: {exc}")
+        return 1
+
+    print("DINOv3 backbone loaded successfully.")
+    print(f"  model_path: {backbone.model_path}")
+    print(f"  feature_dim: {backbone.feature_dim}")
+    print(f"  local_files_only: {backbone.local_files_only}")
     return 0
 
 

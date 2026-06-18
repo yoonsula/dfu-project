@@ -53,6 +53,7 @@ class DiabeticFootDataset(Dataset):
         hflip_prob: float = 0.0,
         negative_oversample: int = 1,
         neg_sample_weight: float = 1.0,
+        samples: list[SegmentationSample] | None = None,
     ) -> None:
         if task not in {"foot", "wound"}:
             raise ValueError(f"Unsupported task: {task}")
@@ -76,7 +77,10 @@ class DiabeticFootDataset(Dataset):
         self.hflip_prob = float(hflip_prob)
         self.negative_oversample = max(1, int(negative_oversample))
         self.neg_sample_weight = float(neg_sample_weight)
-        self.samples = self._load_samples()
+        if samples is not None:
+            self.samples = list(samples)
+        else:
+            self.samples = self._load_samples()
 
         if not self.samples:
             raise RuntimeError(f"No samples found for task={self.task!r}, split={self.split!r}")

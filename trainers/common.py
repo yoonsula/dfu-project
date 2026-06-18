@@ -1,3 +1,5 @@
+"""Shared training CLI arguments and helpers for foot, wound, and dfu trainers."""
+
 from __future__ import annotations
 
 import argparse
@@ -7,16 +9,26 @@ from typing import Iterable
 
 import torch
 
-from paths import DINOV3_CHECKPOINT as DEFAULT_DINOV3_CHECKPOINT
-from paths import DINOV3_REPO as DEFAULT_DINOV3_REPO
+from paths import DINOV3_MODEL_PATH as DEFAULT_DINOV3_MODEL_PATH
 from paths import TRAIN_OUTPUT_DIR as DEFAULT_TRAIN_OUTPUT_DIR
 from utils.runtime import resolve_device
 from utils.runtime import seed_everything
 
 
-def add_common_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--dinov3-repo", type=Path, default=DEFAULT_DINOV3_REPO)
-    parser.add_argument("--dinov3-checkpoint", type=Path, default=DEFAULT_DINOV3_CHECKPOINT)
+def add_common_args(
+    parser: argparse.ArgumentParser,
+    *,
+    default_image_size: int = 384,
+    default_epochs: int = 30,
+    default_batch_size: int = 32,
+    default_lr: float = 5.0e-4,
+) -> None:
+    parser.add_argument(
+        "--dinov3-model",
+        type=Path,
+        default=DEFAULT_DINOV3_MODEL_PATH,
+        help="Local Hugging Face snapshot directory for the frozen DINOv3 ViT-S/16 backbone.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_TRAIN_OUTPUT_DIR)
     parser.add_argument(
         "--run-name",
@@ -24,11 +36,12 @@ def add_common_args(parser: argparse.ArgumentParser) -> None:
         default=None,
         help="Subdirectory name under --output-dir. Defaults to a timestamp when --output-dir is the default.",
     )
-    parser.add_argument("--image-size", type=int, default=768)
-    parser.add_argument("--epochs", type=int, default=10)
-    parser.add_argument("--batch-size", type=int, default=8)
+    parser.add_argument("--image-size", type=int, default=default_image_size)
+    parser.add_argument("--epochs", type=int, default=default_epochs)
+    parser.add_argument("--batch-size", type=int, default=default_batch_size)
     parser.add_argument("--num-workers", type=int, default=4)
-    parser.add_argument("--lr", type=float, default=5.0e-4)
+    parser.add_argument("--lr", type=float, default=default_lr)
+    parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--weight-decay", type=float, default=1.0e-4)
     parser.add_argument(
         "--lr-scheduler",
