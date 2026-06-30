@@ -70,7 +70,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--display-max-size",
         type=int,
-        default=512,
+        default=520,
         help="Max edge length for overlay returned to browser (0 = webcam resolution).",
     )
     parser.add_argument("--stream-time-limit", type=int, default=3600, help="WebRTC session limit (seconds).")
@@ -79,12 +79,12 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Do not skip webcam frames while inference is running.",
     )
-    parser.add_argument("--panel-width", type=int, default=480, help="Panel width (px); WebRTC / image column.")
+    parser.add_argument("--panel-width", type=int, default=520, help="Panel width (px); WebRTC / image column.")
     parser.add_argument(
         "--panel-height",
         type=int,
-        default=400,
-        help="Single image height (px). WebRTC height = 2x; JSON height = 2x + margin.",
+        default=440,
+        help="Single image height (px). Result JSON height = 2x this value.",
     )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--foot-threshold", type=float, default=0.5)
@@ -347,8 +347,7 @@ def build_app(
     image_panel_height = panel_height
     live_panel_height = panel_height
 
-    # JSON 영역 크게
-    json_panel_height = int(panel_height * 1.5)
+    json_panel_height = int(panel_height * 2)
 
     media_column_min_width = panel_width + 48
 

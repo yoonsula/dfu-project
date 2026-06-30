@@ -189,7 +189,7 @@ python app_gradio.py \
   --foot-head-checkpoint checkpoints/foot_head_v1/best.pt \
   --wound-head-checkpoint checkpoints/wound_head_v1/best.pt \
   --dfu-head-checkpoint checkpoints/dfu_head_v1/best.pt \
-  --display-max-size 512 \
+  --display-max-size 520 \
   --device cuda \
   --amp
 ```

@@ -8,3 +8,4 @@ output/
 *.pt
 checkpoints/
 assets/
+analysis/
