@@ -8,7 +8,7 @@ import torch
 from models import DFUPipelineModel, DINOv3Backbone
 from paths import DINOV3_MODEL_PATH as DEFAULT_DINOV3_MODEL_PATH
 
-DEFAULT_IMAGE_SIZE = 384
+DEFAULT_IMAGE_SIZE = 512
 
 
 def checkpoint_state_dict(checkpoint: object) -> dict[str, torch.Tensor]:

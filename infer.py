@@ -97,7 +97,7 @@ def parse_args() -> argparse.Namespace:
         "--image-size",
         type=int,
         default=None,
-        help="Model input resolution. Defaults to foot head checkpoint args.image_size, then 384.",
+        help="Model input resolution. Defaults to foot head checkpoint args.image_size, then 512.",
     )
     parser.add_argument("--device", type=str, default="auto")
     parser.add_argument("--foot-threshold", type=float, default=0.5)

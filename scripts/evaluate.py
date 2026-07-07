@@ -33,7 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--image-size",
         type=int,
         default=None,
-        help="Input resolution. Defaults to checkpoint args.image_size, then 384.",
+        help="Input resolution. Defaults to checkpoint args.image_size, then 512.",
     )
     parser.add_argument("--batch-size", type=int, default=None)
     parser.add_argument("--num-workers", type=int, default=4)

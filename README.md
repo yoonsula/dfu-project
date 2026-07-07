@@ -24,7 +24,7 @@ python infer.py \
   --device cuda
 ```
 
-`--image-size`를 생략하면 foot head checkpoint의 `args.image_size`를 읽고, 없으면 **384**를 사용합니다.
+`--image-size`를 생략하면 foot head checkpoint의 `args.image_size`를 읽고, 없으면 **512**를 사용합니다.
 
 브라우저 UI:
 
@@ -33,7 +33,6 @@ python app_gradio.py \
   --foot-head-checkpoint checkpoints/foot_head_v1/best.pt \
   --wound-head-checkpoint checkpoints/wound_head_v1/best.pt \
   --dfu-head-checkpoint checkpoints/dfu_head_v1/best.pt \
-  --image-size 384 \
   --device cuda
 # http://127.0.0.1:7861
 ```
@@ -87,7 +86,7 @@ feature map [B, 384, H/16, W/16]
 
 `DFUFeatureClassifierHead`는 `--head-type linear|mlp`로 학습하며, checkpoint의 `head_state_dict`를 `infer.py --dfu-head-checkpoint`로 로드합니다.
 
-참고 run (`dfu_head_v1`, linear, image_size=384): val accuracy **98.8%**, val F1 **97.8%** (epoch 16).
+상세 실험 기록은 [DFU Classification](#dfu-classification) 섹션을 참고하세요.
 
 ## Configuration
 
@@ -178,7 +177,7 @@ python infer.py \
 | `--no-wound-feature-crop` | off | wound head를 전체 feature map에 적용 |
 | `--no-guide` | off | 촬영 가이드·중앙 정렬 gate 비활성화 |
 | `--no-classification` | off | DFU 분류 스킵 |
-| `--image-size` | checkpoint에서 추론 | foot/wound/dfu 학습 해상도와 일치 권장 (384) |
+| `--image-size` | checkpoint에서 추론 | foot/wound/dfu 학습 해상도와 일치 권장 (512) |
 
 Wound head는 기본적으로 foot mask bbox를 `--wound-crop-margin`만큼 확장한 feature crop만 사용합니다. overlay에는 노란 bbox가 표시되고 JSON에 `wound_crop_bbox: [xmin, ymin, xmax, ymax]`가 기록됩니다.
 
@@ -203,9 +202,9 @@ python app_gradio.py \
 
 ## Training
 
-재학습 시 데이터는 `../../03_데이터/` 기본 경로 또는 `.env`로 지정합니다.
+재학습 데이터는 `../../03_데이터/` (또는 `.env`의 `DFU_DATA_ROOT`) 아래에 둡니다.
 
-`train.py`는 `--task`에 따라 trainer로 위임합니다. 각 task는 **frozen backbone + head 1개**만 학습하고, 추론 시 `DFUPipelineModel`이 checkpoint를 조합합니다.
+`train.py --task {foot,wound,dfu}`는 frozen DINOv3 backbone 위에서 **해당 head만** 학습합니다. 추론 시 `DFUPipelineModel`이 checkpoint를 조합합니다.
 
 ```bash
 python train.py --task foot ...
@@ -218,94 +217,209 @@ python -m trainers.wound_trainer ...
 python -m trainers.dfu_trainer ...
 ```
 
-**공통 기본값** (`trainers/common.py`): foot/wound는 `--image-size 384`, `--batch-size 32`, `--lr 5e-4`.  
-`--run-name`을 생략하면 `checkpoints/{timestamp}/`에 저장됩니다.
+**공통 기본값** (`trainers/common.py`): `--image-size 512`, `--batch-size 32`, `--lr 5e-4`, `--epochs 30`.
 
-> foot / wound / dfu head는 inference에서 같은 backbone feature를 공유하므로, **세 task 모두 동일한 `--image-size`(권장 384)와 `DINOV3_MODEL_PATH`**를 사용하세요.
+> foot / wound / dfu head는 inference에서 **같은 backbone feature**를 공유합니다. 세 task 모두 **동일한 `--image-size`(512)와 `DINOV3_MODEL_PATH`**를 사용하세요.
 
-### 학습 데이터 경로
+| 공통 옵션 | 기본값 | 설명 |
+|-----------|--------|------|
+| `--run-name` | timestamp | `checkpoints/{run_name}/`에 저장 |
+| `--dinov3-model` | `assets/dinov3-hf` | frozen backbone |
+| `--amp` | off | CUDA mixed precision |
+| `--early-stopping-patience` | 7 | val score 개선 없으면 조기 종료 |
 
-| 데이터 | 기본 경로 |
-|--------|-----------|
-| Foot (Roboflow) | `../../03_데이터/roboflow-foot` |
-| Foot (DFU SAM3) | `../../03_데이터/dfu-foot-sam3-filtered/train` |
-| Body hard negatives | `../../03_데이터/roboflow-body` |
-| Human body hard negatives | `../../03_데이터/roboflow-humanbody` |
-| Wound (FUSeg) | `../../03_데이터/wound-segmentation/data/Foot Ulcer Segmentation Challenge` |
-| Wound Image Dataset | `../../03_데이터/Wound Image Dataset` |
-| DFU classification | `../../03_데이터/dfu_classification_data` |
+checkpoint payload: `head_state_dict`, `args`, `metrics`, `epoch`.
 
-`datasets/catalog.py`에서 foot / wound source 목록을 관리합니다. 실험용 COCO root만 추가할 때는 `--foot-root`를 반복 지정할 수 있습니다.
+---
 
-### Foot / Wound segmentation
+### Foot Segmentation
+
+발 영역 binary mask를 예측합니다. `FastInstFootHead` (num_queries=8).
+
+#### 데이터셋
+
+| 소스 | 기본 경로 | 역할 | 형식 |
+|------|-----------|------|------|
+| Roboflow Foot | `../../03_데이터/roboflow-foot` | positive (primary) | COCO (`_annotations.coco.json`) |
+| DFU SAM3 Foot | `../../03_데이터/dfu-foot-sam3-filtered/train` | positive (자동 merge) | COCO |
+| Roboflow Body | `../../03_데이터/roboflow-body` | hard negative (category_id=1) | COCO |
+| Roboflow Human body | `../../03_데이터/roboflow-humanbody` | hard negative (category_id=5,10) | COCO |
+
+- val split: primary positive `--val-ratio` (기본 10%), negative `--val-negative-ratio` (기본 25%)
+- train negative oversample: `--negative-oversample 4`, empty mask loss 가중: `--neg-loss-weight 3.0`
+- 추가 COCO root: `--foot-root /path/to/coco` 반복 지정
+
+Foot 학습에는 wound 데이터를 사용하지 않습니다. (`datasets/catalog.py`의 `foot_primary_sources`, `foot_extra_coco_sources`)
+
+#### 학습
 
 ```bash
 python train.py \
   --task foot \
-  --run-name foot_head_v1 \
-  --image-size 384 \
+  --run-name foot_head_v2 \
+  --image-size 512 \
   --epochs 30 \
-  --batch-size 64 \
+  --batch-size 32 \
   --amp \
   --device cuda
+```
 
+#### 평가
+
+```bash
+python scripts/evaluate.py \
+  --task foot \
+  --checkpoint checkpoints/foot_head_v2/best.pt \
+  --data-root /path/to/coco-foot-test \
+  --device cuda
+```
+
+지표: dice, iou, accuracy. `--output-json report.json`으로 리포트 저장 가능.
+
+#### 참고 run
+
+| run | image_size | best val dice | best val iou | checkpoint |
+|-----|------------|---------------|--------------|------------|
+| `foot_head_v1` | 512 | 0.954 | 0.933 | `checkpoints/foot_head_v1/best.pt` |
+| `foot_head_v2` | 512 | 0.959 | 0.935 | `checkpoints/foot_head_v2/best.pt` |
+
+---
+
+### Wound Segmentation
+
+궤양 영역 binary mask를 예측합니다. `FastInstWoundHead` (num_queries=16).  
+Inference 시 foot bbox 기준 feature crop 사용 (`--wound-crop-margin`).
+
+#### 데이터셋
+
+| 소스 | 기본 경로 | 역할 | 형식 |
+|------|-----------|------|------|
+| FUSeg | `../../03_데이터/wound-segmentation/data/Foot Ulcer Segmentation Challenge` | positive | `train\|validation\|test/images` + `labels/` |
+| Wound Image Dataset | `../../03_데이터/Wound Image Dataset` | positive + negative | `wound_main/` + `wound_mask/`, `Nomal/` (negative) |
+
+- FUSeg: split별 고정 (train/validation/test)
+- Wound Image Dataset: `--val-ratio` (기본 10%)로 train/val 랜덤 split
+- Mendeley 데이터 제외: `--no-wound-image`
+
+Wound 학습에는 foot COCO 데이터를 사용하지 않습니다. (`datasets/catalog.py`의 `wound_sources`)
+
+#### 학습
+
+```bash
 python train.py \
   --task wound \
   --run-name wound_head_v1 \
-  --image-size 384 \
+  --image-size 512 \
   --epochs 30 \
   --batch-size 64 \
   --amp \
   --device cuda
 ```
 
-출력 예:
+#### 평가
 
-```text
-checkpoints/foot_head_v1/best.pt
-checkpoints/wound_head_v1/best.pt
+```bash
+python scripts/evaluate.py \
+  --task wound \
+  --checkpoint checkpoints/wound_head_v1/best.pt \
+  --image-dir /path/to/images \
+  --mask-dir /path/to/masks \
+  --device cuda
 ```
 
-checkpoint payload: `head_state_dict`, `args`, `metrics`, `epoch`.
+지표: dice, iou, accuracy.
 
-### DFU classification 데이터 준비
+#### 참고 run
 
-`dfu` vs `other` ImageFolder 형식입니다. 원본 `DFU Dataset`과 `dfu_partA_20260617`은 아래 스크립트로 합칩니다.
+| run | image_size | best val dice | best val iou | checkpoint |
+|-----|------------|---------------|--------------|------------|
+| `wound_head_v1` | 512 | 0.814 | 0.738 | `checkpoints/wound_head_v1/best.pt` |
+
+---
+
+### DFU Classification
+
+발 이미지를 **dfu vs other** binary로 분류합니다. `DFUFeatureClassifierHead` (spatial mean pooling → Linear/MLP).
+
+#### 데이터셋
+
+학습에 사용한 원본 3종과 로컬 경로입니다.
+
+| # | 소스 | 로컬 경로 | 전처리 | binary 라벨 |
+|---|------|-----------|--------|-------------|
+| 1 | **AI Hub** (욕창 데이터, dataSetSn=509) | AI Hub 반출 데이터 | **원본 그대로** 사용 | dfu / other |
+| 2 | **Kaggle — DFU Dataset** | `../../03_데이터/DFU Dataset` | **foot segmentation → crop** 후 사용 | dfu / other |
+| 3 | **PART A** (2026-06-17 CRC 라벨링) | `../../03_데이터/dfu_partA_20260617` | **foot segmentation → crop** 후 사용 | dfu / other |
+
+> Kaggle `DFU Dataset`과 PART A(`dfu_partA_20260617`)는 `scripts/crop_foot_classification_dataset.py`로 foot head를 돌려 발 영역을 crop한 뒤 분류 학습에 넣었습니다. AI Hub 데이터는 crop 없이 사용합니다.
+
+**출처 상세**
+
+| 소스 | 설명 | URL |
+|------|------|-----|
+| AI Hub | 욕창 관련 AI Hub 공개 데이터 | [aihub.or.kr (dataSetSn=509)](https://www.aihub.or.kr/aihubdata/data/view.do?pageIndex=1&currMenu=115&topMenu=100&srchOptnCnd=OPTNCND001&searchKeyword=%EC%9A%95%EC%B0%BD&srchDetailCnd=DETAILCND001&srchOrder=ORDER001&srchPagePer=20&aihubDataSe=data&dataSetSn=509) |
+| Kaggle DFU Dataset | Srivatsan Mk, MIT License | [kaggle.com/datasets/srivatsanmk2004/dfu-dataset](https://www.kaggle.com/datasets/srivatsanmk2004/dfu-dataset) |
+| PART A | 2026-06-17 기준 CRC 라벨링 데이터 | _(내부 수집)_ |
+
+**학습용 ImageFolder 경로**
+
+| 경로 | 설명 |
+|------|------|
+| `../../03_데이터/dfu_classification_data` | Kaggle + PART A merge 출력 (`prepare_dfu_classification_data.py`) |
+| `../../03_데이터/dfu_classification_cropped` | foot crop 적용 후 최종 학습·평가용 (Kaggle + PART A + AI Hub 통합) |
+
+**Label mapping** (Kaggle 3-class → binary)
+
+| 원본 | → | binary |
+|------|---|--------|
+| `DFU Dataset/*/Diabetic Foot Ulcer` | → | `dfu` |
+| `DFU Dataset/*/Healthy` | → | `other` |
+| `DFU Dataset/*/Wound` | → | `other` |
+| `dfu_partA_20260617/dfu` | → | `dfu` |
+| `dfu_partA_20260617/others` | → | `other` |
+
+#### 데이터 준비
+
+`dfu` vs `other` ImageFolder 형식입니다.
+
+**1) Kaggle + PART A merge**
 
 ```bash
 python scripts/prepare_dfu_classification_data.py --overwrite
+# 디스크 절약: --mode hardlink
 ```
 
+**2) Kaggle + PART A foot crop** (foot head checkpoint 필요)
+
+```bash
+python scripts/crop_foot_classification_dataset.py \
+  --input-root ../../03_데이터/dfu_classification_data \
+  --output-root ../../03_데이터/dfu_classification_cropped \
+  --foot-head-checkpoint checkpoints/foot_head_v2/best.pt \
+  --device cuda
+```
+
+AI Hub 반출 데이터는 crop 없이 `dfu_classification_cropped` ImageFolder에 통합합니다.  
+`dfu_partA_20260617`은 patient/group id 기준 train/val/test split.
+
 ```text
-../../03_데이터/dfu_classification_data/
+../../03_데이터/dfu_classification_cropped/
   train/{dfu,other}/
   val/{dfu,other}/
   test/{dfu,other}/
 ```
 
-Label mapping:
-
-```text
-DFU Dataset/*/Diabetic Foot Ulcer -> dfu
-DFU Dataset/*/Healthy             -> other
-DFU Dataset/*/Wound               -> other
-dfu_partA_20260617/dfu            -> dfu
-dfu_partA_20260617/others         -> other
-```
-
-`dfu_partA_20260617`은 patient/group id 기준 train/val/test split. `--mode hardlink`로 디스크 절약 가능.
-
-### DFU classification head 학습
+#### 학습
 
 ```bash
 python train.py \
   --task dfu \
-  --dfu-root ../../03_데이터/dfu_classification_data \
+  --dfu-root ../../03_데이터/dfu_classification_cropped \
   --run-name dfu_head_v1 \
-  --image-size 384 \
   --epochs 30 \
   --batch-size 32 \
-  --lr 5e-4 \
+  --head-type mlp \
+  --lr 1e-3 \
   --device cuda \
   --amp
 ```
@@ -319,18 +433,40 @@ python train.py \
 | `--best-metric` | `f1` | `best.pt` 선택 기준 (`accuracy` 가능) |
 | `--warmup-ratio` | `0.1` | cosine scheduler warmup |
 
-출력:
+#### 평가
 
-```text
-checkpoints/dfu_head_v1/best.pt
-checkpoints/dfu_head_v1/train_log.json
+```bash
+python scripts/evaluate.py \
+  --task dfu \
+  --checkpoint checkpoints/dfu_head_mlp_1e3_aug/best.pt \
+  --data-root ../../03_데이터/dfu_classification_cropped/test \
+  --device cuda \
+  --output-json report.json
 ```
 
-`best.pt`는 `infer.py --dfu-head-checkpoint`에 바로 사용합니다.
+지표: accuracy, precision, recall, f1. 일괄 비교: `scripts/evaluate_dfu_heads_on_test.py`, 오분류 리포트: `scripts/report_dfu_test_errors.py`.
+
+#### 참고 run
+
+| run | head | lr | aug | val acc | val F1 | test acc | test F1 | checkpoint |
+|-----|------|----|-----|---------|--------|----------|---------|------------|
+| `dfu_head_v1` | linear | 5e-4 | — | 95.1% | 90.9% | _TBD_ | _TBD_ | `checkpoints/dfu_head_v1/best.pt` |
+| `dfu_head_mlp_1e3_aug` | mlp | 1e-3 | ✓ | 97.8% | 94.4% | 96.2% | 93.1% | `checkpoints/dfu_head_mlp_1e3_aug/best.pt` |
+| `dfu_head_mlp_1e3` | mlp | 1e-3 | — | 98.0% | 93.4% | 96.1% | 92.9% | `checkpoints/dfu_head_mlp_1e3/best.pt` |
+| _(새 run)_ | | | | | | | | |
+
+**실험 메모** _(자유 기록)_
+
+- 원본: AI Hub (원본) + Kaggle DFU Dataset (foot crop) + PART A (foot crop)
+- crop checkpoint: `foot_head_v2`
+- class imbalance 처리:
+- 상세 비교: `analysis/head_checkpoint_comparison/`
+
+---
 
 ## Evaluation (Test Set)
 
-`scripts/evaluate.py`로 학습된 head checkpoint의 hold-out 성능을 확인합니다.
+`scripts/evaluate.py`로 hold-out 성능을 확인합니다. task별 데이터 형식과 명령은 위 [Foot](#foot-segmentation), [Wound](#wound-segmentation), [DFU](#dfu-classification) 섹션을 참고하세요.
 
 | Task | 입력 | 평가 지표 |
 |------|------|-----------|
@@ -338,47 +474,17 @@ checkpoints/dfu_head_v1/train_log.json
 | wound | `--image-dir` + `--mask-dir` | dice, iou, accuracy |
 | dfu | `--data-root` (`dfu/`, `other/` 하위 폴더) | accuracy, precision, recall, f1 |
 
-```bash
-# Foot (COCO)
-python scripts/evaluate.py \
-  --task foot \
-  --checkpoint checkpoints/foot_head_v1/best.pt \
-  --data-root /path/to/coco-foot-test \
-  --device cuda
-
-# Wound (image + mask folders)
-python scripts/evaluate.py \
-  --task wound \
-  --checkpoint checkpoints/wound_head_v1/best.pt \
-  --image-dir /path/to/images \
-  --mask-dir /path/to/masks \
-  --device cuda
-
-# DFU classification (ImageFolder root — e.g. test split folder)
-python scripts/evaluate.py \
-  --task dfu \
-  --checkpoint checkpoints/dfu_head_v1/best.pt \
-  --data-root ../../03_데이터/dfu_classification_data/test \
-  --device cuda
-```
-
-`--output-json report.json`으로 전체 리포트를 저장할 수 있습니다.
-
 ## Dataset Acknowledgments
 
 재학습에 사용하는 외부 데이터셋의 저작자를 표기합니다.
 
-### Lower Limb and Feet Wound Image Dataset (Mendeley)
+### Foot (Segmentation)
 
-궤양 세그멘테이션 학습에 `Wound Image Dataset` (`wound_main` / `wound_mask` / `Nomal`)을 사용합니다.
-
-- **제목:** Lower Limb and Feet Wound Image Dataset for Medical Analysis
-- **저자:** Md Masudul Islam
-- **라이선스:** [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
-- **DOI:** [10.17632/hsj38fwnvr.3](https://doi.org/10.17632/hsj38fwnvr.3)
-- **URL:** [https://data.mendeley.com/datasets/hsj38fwnvr/3](https://data.mendeley.com/datasets/hsj38fwnvr/3)
-
-### Roboflow Universe
+| 프로젝트 경로 | 출처 |
+|---------------|------|
+| `roboflow-foot` | [Foot Segmentation (cv-v6vyj)](https://universe.roboflow.com/cv-v6vyj/foot-segmentation-dd6qi) |
+| `roboflow-body` | [body (hell-khakz)](https://universe.roboflow.com/hell-khakz/body-idcrc) |
+| `roboflow-humanbody` | [Human parts (personal-ekd6m)](https://universe.roboflow.com/personal-ekd6m/human-parts-bru4g) |
 
 ```bibtex
 @misc{ human-parts-bru4g_dataset,
@@ -419,13 +525,59 @@ python scripts/evaluate.py \
   month = { jul },
   note = { visited on 2026-06-16 },
 }
+
+@misc{ foot-dydgp-wkb8b_dataset,
+  title = { foot Dataset },
+  type = { Open Source Dataset },
+  author = { ysla },
+  howpublished = { \url{ https://universe.roboflow.com/ysla/foot-dydgp-wkb8b } },
+  url = { https://universe.roboflow.com/ysla/foot-dydgp-wkb8b },
+  journal = { Roboflow Universe },
+  publisher = { Roboflow },
+  year = { 2026 },
+  month = { jun },
+  note = { visited on 2026-07-07 },
+}
 ```
 
-| 프로젝트 경로 | Roboflow 데이터셋 |
-|---------------|-------------------|
-| `roboflow-foot` | [Foot Segmentation](https://universe.roboflow.com/cv-v6vyj/foot-segmentation-dd6qi) |
-| `roboflow-body` | [body](https://universe.roboflow.com/hell-khakz/body-idcrc) |
-| `roboflow-humanbody` | [Human parts](https://universe.roboflow.com/personal-ekd6m/human-parts-bru4g) |
+### Wound (Segmentation)
+
+**Lower Limb and Feet Wound Image Dataset (Mendeley)**
+
+- **제목:** Lower Limb and Feet Wound Image Dataset for Medical Analysis
+- **저자:** Md Masudul Islam
+- **라이선스:** [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+- **DOI:** [10.17632/hsj38fwnvr.3](https://doi.org/10.17632/hsj38fwnvr.3)
+- **URL:** [https://data.mendeley.com/datasets/hsj38fwnvr/3](https://data.mendeley.com/datasets/hsj38fwnvr/3)
+- **로컬 경로:** `Wound Image Dataset` (`wound_main/` + `wound_mask/`, `Nomal/`)
+
+**FUSeg — Foot Ulcer Segmentation Challenge**
+
+- **저자:** uwm-bigdata
+- **URL:** [https://github.com/uwm-bigdata/wound-segmentation](https://github.com/uwm-bigdata/wound-segmentation)
+- **로컬 경로:** `wound-segmentation/data/Foot Ulcer Segmentation Challenge`
+
+### DFU Classification
+
+**AI Hub — 욕창 데이터 (dataSetSn=509)**
+
+- **URL:** [https://www.aihub.or.kr/aihubdata/data/view.do?dataSetSn=509](https://www.aihub.or.kr/aihubdata/data/view.do?pageIndex=1&currMenu=115&topMenu=100&srchOptnCnd=OPTNCND001&searchKeyword=%EC%9A%95%EC%B0%BD&srchDetailCnd=DETAILCND001&srchOrder=ORDER001&srchPagePer=20&aihubDataSe=data&dataSetSn=509)
+- **전처리:** 원본 이미지 그대로 사용 (foot crop 없음)
+
+**Kaggle — DFU Dataset**
+
+- **제목:** DFU Dataset
+- **제작자:** Srivatsan Mk (Kaggle)
+- **라이선스:** MIT License
+- **URL:** [https://www.kaggle.com/datasets/srivatsanmk2004/dfu-dataset](https://www.kaggle.com/datasets/srivatsanmk2004/dfu-dataset)
+- **로컬 경로:** `../../03_데이터/DFU Dataset`
+- **전처리:** foot segmentation head로 발 영역 crop 후 사용
+
+**PART A — CRC 라벨링 데이터**
+
+- **설명:** 2026-06-17 기준 CRC 라벨링 데이터
+- **로컬 경로:** `../../03_데이터/dfu_partA_20260617`
+- **전처리:** foot segmentation head로 발 영역 crop 후 사용
 
 ## Inference Gate Logic
 
@@ -461,5 +613,5 @@ pip install -r requirements.txt
 | DINOv3 backbone load 실패 | `python scripts/verify_setup.py`, `assets/dinov3-hf/`에 HF 스냅샷 존재, `transformers>=4.56` |
 | `DFU head checkpoint not found` | `--dfu-head-checkpoint` 경로 또는 `--no-classification` |
 | head key mismatch warning | 구 checkpoint prefix (`ulcer_head.` 등) — non-strict 로드, 동작 확인 |
-| OOM (WSL) | `--num-workers 0`, `--image-size 384` |
-| inference 속도 | 학습 해상도와 `--image-size` 일치 (384) |
+| OOM (WSL) | `--num-workers 0`, `--image-size 512` |
+| inference 속도 | 학습 해상도와 `--image-size` 일치 (512) |

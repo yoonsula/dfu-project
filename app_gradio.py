@@ -64,8 +64,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--image-size",
         type=int,
-        default=384,
-        help="Model input resolution (match training checkpoint, usually 384).",
+        default=512,
+        help="Model input resolution (match training checkpoint, usually 512).",
     )
     parser.add_argument(
         "--display-max-size",

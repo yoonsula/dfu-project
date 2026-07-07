@@ -14,6 +14,7 @@ from transformers import get_cosine_schedule_with_warmup
 
 from datasets import ClassificationImageDataset
 from models import DINOv3Backbone, DFUFeatureClassifierHead
+from inference.checkpoints import DEFAULT_IMAGE_SIZE
 from paths import DEFAULT_DFU_CLASSIFICATION_DATA_ROOT
 from trainers.training_log import (
     TrainingLogger,
@@ -346,9 +347,9 @@ def train(args: argparse.Namespace) -> None:
     args.task = TASK
     device, use_amp = prepare_run(args)
 
-    if args.image_size != 384:
+    if args.image_size != DEFAULT_IMAGE_SIZE:
         print(
-            f"Warning: --image-size {args.image_size} differs from the shared foot/wound pipeline default (384). "
+            f"Warning: --image-size {args.image_size} differs from the shared foot/wound pipeline default ({DEFAULT_IMAGE_SIZE}). "
             "Use the same image size across foot, wound, and dfu heads at inference."
         )
 

@@ -18,7 +18,7 @@ from utils.runtime import seed_everything
 def add_common_args(
     parser: argparse.ArgumentParser,
     *,
-    default_image_size: int = 384,
+    default_image_size: int = 512,
     default_epochs: int = 30,
     default_batch_size: int = 32,
     default_lr: float = 5.0e-4,
