@@ -1,0 +1,1081 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DFU Foot Analysis Pipeline — Portfolio</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net" />
+  <link href="https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable-dynamic-subset.min.css" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #ffffff;
+      --bg-soft: #f5f7fa;
+      --bg-card: #ffffff;
+      --text: #1d1d1f;
+      --text-secondary: #6e6e73;
+      --text-muted: #8e8e93;
+      --blue: #0071e3;
+      --blue-soft: #e8f1fc;
+      --blue-deep: #0058b0;
+      --border: #e5e5ea;
+      --shadow: 0 8px 28px rgba(0, 0, 0, 0.06);
+      --radius: 16px;
+      --radius-sm: 10px;
+      --slide-w: 1280px;
+      --slide-h: 720px;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #d2d2d7;
+      color: var(--text);
+      -webkit-font-smoothing: antialiased;
+    }
+
+    .deck {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 28px;
+      padding: 40px 20px 80px;
+    }
+
+    .slide {
+      width: var(--slide-w);
+      height: var(--slide-h);
+      background: var(--bg);
+      border-radius: 12px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.12);
+      padding: 56px 64px;
+      position: relative;
+      overflow: hidden;
+      flex-shrink: 0;
+      page-break-after: always;
+      break-after: page;
+    }
+
+    .slide::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background:
+        radial-gradient(ellipse 80% 60% at 100% 0%, rgba(0, 113, 227, 0.06), transparent 55%),
+        radial-gradient(ellipse 50% 40% at 0% 100%, rgba(0, 113, 227, 0.04), transparent 50%);
+      pointer-events: none;
+    }
+
+    .slide > * { position: relative; z-index: 1; }
+
+    .slide-num {
+      position: absolute;
+      right: 40px;
+      bottom: 28px;
+      font-size: 13px;
+      color: var(--text-muted);
+      font-weight: 500;
+      letter-spacing: 0.02em;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--blue);
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 16px;
+    }
+
+    .eyebrow::before {
+      content: "";
+      width: 18px;
+      height: 2px;
+      background: var(--blue);
+      border-radius: 2px;
+    }
+
+    h1 {
+      font-size: 52px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.15;
+      color: var(--text);
+    }
+
+    h2 {
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: -0.025em;
+      line-height: 1.2;
+      margin-bottom: 28px;
+    }
+
+    h3 {
+      font-size: 18px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+      margin-bottom: 10px;
+    }
+
+    p, li {
+      font-size: 16px;
+      line-height: 1.55;
+      color: var(--text-secondary);
+    }
+
+    .lead {
+      font-size: 20px;
+      line-height: 1.5;
+      color: var(--text-secondary);
+      max-width: 720px;
+    }
+
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border-radius: 999px;
+      background: var(--blue-soft);
+      color: var(--blue-deep);
+      font-size: 13px;
+      font-weight: 650;
+      letter-spacing: -0.01em;
+    }
+
+    .badge.metric {
+      background: var(--blue);
+      color: #fff;
+      font-size: 14px;
+      padding: 8px 14px;
+    }
+
+    .badge.soft {
+      background: var(--bg-soft);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+    .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
+
+    .card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 22px 24px;
+      box-shadow: var(--shadow);
+    }
+
+    .card.flat {
+      box-shadow: none;
+      background: var(--bg-soft);
+      border-color: transparent;
+    }
+
+    .card .label {
+      font-size: 12px;
+      font-weight: 650;
+      color: var(--blue);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+
+    .card .value {
+      font-size: 28px;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .card .desc {
+      font-size: 14px;
+      color: var(--text-secondary);
+      line-height: 1.45;
+    }
+
+    .metric-box {
+      background: linear-gradient(135deg, #0071e3 0%, #0a84ff 100%);
+      color: white;
+      border-radius: var(--radius);
+      padding: 20px 22px;
+      box-shadow: 0 10px 24px rgba(0, 113, 227, 0.25);
+    }
+
+    .metric-box .num {
+      font-size: 36px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1;
+      margin-bottom: 6px;
+    }
+
+    .metric-box .cap {
+      font-size: 13px;
+      opacity: 0.9;
+      font-weight: 500;
+    }
+
+    /* Cover */
+    .cover {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      padding: 72px 80px;
+    }
+
+    .cover .brand {
+      font-size: 18px;
+      font-weight: 650;
+      color: var(--blue);
+      margin-bottom: 20px;
+      letter-spacing: -0.01em;
+    }
+
+    .cover h1 {
+      font-size: 56px;
+      max-width: 900px;
+      margin-bottom: 20px;
+    }
+
+    .cover .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 36px;
+    }
+
+    .cover .footer-line {
+      position: absolute;
+      left: 80px;
+      bottom: 48px;
+      right: 80px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 14px;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border);
+      padding-top: 18px;
+    }
+
+    /* Architecture */
+    .arch-flow {
+      display: flex;
+      align-items: stretch;
+      gap: 12px;
+      margin-top: 8px;
+    }
+
+    .arch-node {
+      flex: 1;
+      background: var(--bg-soft);
+      border-radius: var(--radius-sm);
+      padding: 16px 14px;
+      text-align: center;
+      border: 1px solid var(--border);
+    }
+
+    .arch-node.accent {
+      background: var(--blue-soft);
+      border-color: #c5daf5;
+    }
+
+    .arch-node .icon {
+      width: 36px;
+      height: 36px;
+      border-radius: 10px;
+      background: white;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 10px;
+      font-size: 16px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+      color: var(--blue);
+      font-weight: 700;
+    }
+
+    .arch-node .title {
+      font-size: 14px;
+      font-weight: 650;
+      color: var(--text);
+      margin-bottom: 4px;
+    }
+
+    .arch-node .sub {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+
+    .arch-arrow {
+      display: flex;
+      align-items: center;
+      color: var(--blue);
+      font-size: 20px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+
+    .branch-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 14px;
+      margin-top: 18px;
+    }
+
+    .branch {
+      border: 1px solid var(--border);
+      border-radius: var(--radius-sm);
+      padding: 16px;
+      background: white;
+    }
+
+    .branch .tag {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--blue);
+      background: var(--blue-soft);
+      padding: 3px 8px;
+      border-radius: 6px;
+      margin-bottom: 8px;
+    }
+
+    /* Timeline */
+    .timeline {
+      display: flex;
+      gap: 0;
+      margin-top: 12px;
+      position: relative;
+    }
+
+    .timeline::before {
+      content: "";
+      position: absolute;
+      top: 18px;
+      left: 24px;
+      right: 24px;
+      height: 2px;
+      background: linear-gradient(90deg, var(--blue-soft), var(--blue), var(--blue-soft));
+    }
+
+    .tl-item {
+      flex: 1;
+      text-align: center;
+      padding: 0 8px;
+      position: relative;
+    }
+
+    .tl-dot {
+      width: 14px;
+      height: 14px;
+      border-radius: 50%;
+      background: var(--blue);
+      margin: 12px auto 14px;
+      border: 3px solid white;
+      box-shadow: 0 0 0 2px var(--blue);
+      position: relative;
+      z-index: 1;
+    }
+
+    .tl-item .when {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--blue);
+      margin-bottom: 4px;
+    }
+
+    .tl-item .what {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+
+    /* Tables */
+    table.data {
+      width: 100%;
+      border-collapse: separate;
+      border-spacing: 0;
+      font-size: 14px;
+      overflow: hidden;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    table.data th {
+      background: var(--bg-soft);
+      text-align: left;
+      padding: 12px 14px;
+      font-weight: 650;
+      color: var(--text);
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+
+    table.data td {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--border);
+      color: var(--text-secondary);
+    }
+
+    table.data tr:last-child td { border-bottom: none; }
+    table.data td.hl {
+      color: var(--blue-deep);
+      font-weight: 700;
+    }
+
+    /* Skills */
+    .skill-chip {
+      display: inline-flex;
+      align-items: center;
+      padding: 8px 14px;
+      border-radius: 10px;
+      background: white;
+      border: 1px solid var(--border);
+      font-size: 14px;
+      font-weight: 550;
+      color: var(--text);
+      margin: 0 8px 8px 0;
+    }
+
+    .skill-group { margin-bottom: 18px; }
+    .skill-group .g-title {
+      font-size: 13px;
+      font-weight: 650;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+    }
+
+    /* Code */
+    pre.code {
+      background: #1d1d1f;
+      color: #f5f5f7;
+      border-radius: 12px;
+      padding: 18px 20px;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
+      font-size: 12.5px;
+      line-height: 1.55;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    pre.code .kw { color: #fc5c7d; }
+    pre.code .fn { color: #64d2ff; }
+    pre.code .cm { color: #8e8e93; }
+    pre.code .st { color: #6bcb77; }
+
+    /* PE RI steps */
+    .step-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+
+    .step {
+      border-radius: var(--radius-sm);
+      padding: 16px;
+      background: var(--bg-soft);
+      min-height: 160px;
+    }
+
+    .step .n {
+      width: 28px;
+      height: 28px;
+      border-radius: 8px;
+      background: var(--blue);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 12px;
+    }
+
+    .step h3 { font-size: 15px; margin-bottom: 8px; }
+    .step p { font-size: 13px; line-height: 1.45; }
+
+    .link {
+      color: var(--blue);
+      text-decoration: none;
+      font-weight: 550;
+    }
+
+    .closing {
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: flex-start;
+      height: 100%;
+      padding-bottom: 40px;
+    }
+
+    .closing .quote {
+      font-size: 34px;
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      line-height: 1.35;
+      max-width: 980px;
+      color: var(--text);
+    }
+
+    .closing .quote em {
+      font-style: normal;
+      color: var(--blue);
+    }
+
+    .nav-hint {
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(29,29,31,0.85);
+      color: white;
+      padding: 8px 16px;
+      border-radius: 999px;
+      font-size: 12px;
+      z-index: 100;
+    }
+
+    @media print {
+      body { background: white; }
+      .deck { padding: 0; gap: 0; }
+      .slide {
+        box-shadow: none;
+        border-radius: 0;
+        width: 297mm;
+        height: 167.06mm;
+        page-break-after: always;
+        break-after: page;
+      }
+      .nav-hint { display: none; }
+      @page { size: 297mm 167.06mm; margin: 0; }
+    }
+  </style>
+</head>
+<body>
+  <div class="nav-hint">PDF: Chrome → Print → Landscape · A4 또는 Custom 16:9</div>
+  <div class="deck">
+
+    <!-- 1. Cover -->
+    <section class="slide cover">
+      <div class="brand">Portfolio · Computer Vision / ML Engineering</div>
+      <h1>DFU Foot Analysis<br/>Pipeline</h1>
+      <p class="lead">Shared DINOv3 backbone 위에서 발·궤양 세그멘테이션과<br/>당뇨발(DFU) 이진 분류를 통합한 의료 영상 분석 파이프라인</p>
+      <div class="meta">
+        <span class="badge metric">2026.06 — 2026.07</span>
+        <span class="badge soft">Solo Project · 100%</span>
+        <span class="badge soft">PyTorch · DINOv3 · Gradio</span>
+      </div>
+      <div class="footer-line">
+        <span>윤수 라 · yoonsu@rexsw.com</span>
+        <a class="link" href="https://github.com/yoonsula/dfu-project">github.com/yoonsula/dfu-project</a>
+      </div>
+      <div class="slide-num">01 / 14</div>
+    </section>
+
+    <!-- 2. Project Description -->
+    <section class="slide">
+      <div class="eyebrow">Project Overview</div>
+      <h2>프로젝트 설명</h2>
+      <div class="grid-2" style="margin-bottom: 18px;">
+        <div class="card flat">
+          <div class="label">작업 기간</div>
+          <div class="value">약 4주</div>
+          <div class="desc">2026.06.12 — 2026.07.07 · 설계 → 학습 → 추론 UI까지 End-to-End</div>
+        </div>
+        <div class="card flat">
+          <div class="label">기여도 / 역할</div>
+          <div class="value">100% · Owner</div>
+          <div class="desc">아키텍처 설계, 데이터 파이프라인, 학습/평가, 추론 게이트, Gradio+WebRTC UI</div>
+        </div>
+      </div>
+      <div class="card" style="margin-bottom: 16px;">
+        <div class="label">개요</div>
+        <p style="color: var(--text); font-size: 16px;">
+          단일 입력 이미지에서 <strong>발 영역 탐지 → 궤양 세그멘테이션 → DFU/Other 분류</strong>를 수행하는 통합 파이프라인.
+          frozen DINOv3 ViT-S/16을 공유하고 task별 head만 독립 학습·조합하여 학습 효율과 추론 속도를 동시에 확보했습니다.
+        </p>
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <span class="badge">Foot Dice 0.959</span>
+        <span class="badge">Wound Dice 0.814</span>
+        <span class="badge">DFU Test Acc 96.2%</span>
+        <span class="badge">DFU Test F1 93.1%</span>
+      </div>
+      <div class="slide-num">02 / 14</div>
+    </section>
+
+    <!-- 3. Architecture -->
+    <section class="slide">
+      <div class="eyebrow">Architecture</div>
+      <h2>전체 아키텍처</h2>
+      <div class="arch-flow">
+        <div class="arch-node">
+          <div class="icon">1</div>
+          <div class="title">Input Image</div>
+          <div class="sub">512×512 resize<br/>ImageNet normalize</div>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-node accent">
+          <div class="icon">2</div>
+          <div class="title">DINOv3 ViT-S/16</div>
+          <div class="sub">Frozen backbone<br/>Feature [B,384,H/16,W/16]</div>
+        </div>
+        <div class="arch-arrow">→</div>
+        <div class="arch-node">
+          <div class="icon">3</div>
+          <div class="title">Shared Features</div>
+          <div class="sub">1회 encode 후<br/>3개 head가 공유</div>
+        </div>
+      </div>
+      <div class="branch-row">
+        <div class="branch">
+          <span class="tag">SEG · Foot</span>
+          <h3>FastInstFootHead</h3>
+          <p>queries=8 · area gate<br/>ratio ∈ [0.08, 0.5]</p>
+        </div>
+        <div class="branch">
+          <span class="tag">SEG · Wound</span>
+          <h3>FastInstWoundHead</h3>
+          <p>queries=16 · foot crop<br/>center ±0.25 guide</p>
+        </div>
+        <div class="branch">
+          <span class="tag">CLS · DFU</span>
+          <h3>DFUFeatureHead</h3>
+          <p>mean pool → MLP<br/>dfu / other</p>
+        </div>
+      </div>
+      <p style="margin-top:16px; font-size:14px;">학습: <code>train.py --task {foot|wound|dfu}</code> · 추론: <code>DFUPipelineModel</code>이 checkpoint 조합</p>
+      <div class="slide-num">03 / 14</div>
+    </section>
+
+    <!-- 4. Skills -->
+    <section class="slide">
+      <div class="eyebrow">Skills</div>
+      <h2>스킬 정리</h2>
+      <div class="grid-2">
+        <div>
+          <div class="skill-group">
+            <div class="g-title">Computer Vision / Deep Learning</div>
+            <span class="skill-chip">Semantic Segmentation</span>
+            <span class="skill-chip">Image Classification</span>
+            <span class="skill-chip">Vision Transformer</span>
+            <span class="skill-chip">Transfer Learning</span>
+            <span class="skill-chip">Multi-task Heads</span>
+          </div>
+          <div class="skill-group">
+            <div class="g-title">MLOps / Experiment</div>
+            <span class="skill-chip">Checkpoint Design</span>
+            <span class="skill-chip">Early Stopping</span>
+            <span class="skill-chip">AMP Training</span>
+            <span class="skill-chip">Hold-out Evaluation</span>
+            <span class="skill-chip">Ablation Study</span>
+          </div>
+        </div>
+        <div>
+          <div class="skill-group">
+            <div class="g-title">Data Engineering</div>
+            <span class="skill-chip">COCO / ImageFolder</span>
+            <span class="skill-chip">Hard Negative Mining</span>
+            <span class="skill-chip">Foot Crop Pipeline</span>
+            <span class="skill-chip">Class Imbalance</span>
+            <span class="skill-chip">Multi-source Merge</span>
+          </div>
+          <div class="skill-group">
+            <div class="g-title">Productization</div>
+            <span class="skill-chip">Inference Gating</span>
+            <span class="skill-chip">Gradio UI</span>
+            <span class="skill-chip">WebRTC Realtime</span>
+            <span class="skill-chip">Capture Guidance</span>
+            <span class="skill-chip">CLI Tooling</span>
+          </div>
+        </div>
+      </div>
+      <div class="slide-num">04 / 14</div>
+    </section>
+
+    <!-- 5. Tech Stack -->
+    <section class="slide">
+      <div class="eyebrow">Tech Stack</div>
+      <h2>사용 기술 스택</h2>
+      <div class="grid-3" style="margin-bottom: 16px;">
+        <div class="card">
+          <div class="label">Core ML</div>
+          <h3>PyTorch · Torchvision</h3>
+          <p>학습/추론 루프, AMP, frozen backbone + light head 최적화</p>
+        </div>
+        <div class="card">
+          <div class="label">Backbone</div>
+          <h3>DINOv3 ViT-S/16</h3>
+          <p>HuggingFace Transformers 로컬 스냅샷 · 384-dim feature map</p>
+        </div>
+        <div class="card">
+          <div class="label">Heads</div>
+          <h3>FastInst-style · MLP</h3>
+          <p>query-based binary mask · spatial mean pool classifier</p>
+        </div>
+      </div>
+      <div class="grid-3">
+        <div class="card flat">
+          <div class="label">Serving / UI</div>
+          <h3>Gradio + FastRTC</h3>
+          <p>이미지 탭 + WebRTC 실시간 오버레이 (0.5s JSON 갱신)</p>
+        </div>
+        <div class="card flat">
+          <div class="label">Data</div>
+          <h3>COCO · ImageFolder</h3>
+          <p>Roboflow, FUSeg, AI Hub, Kaggle DFU, 내부 PART A</p>
+        </div>
+        <div class="card flat">
+          <div class="label">Infra</div>
+          <h3>CUDA · Python 3.10+</h3>
+          <p>환경 변수 기반 경로 · verify_setup · evaluate scripts</p>
+        </div>
+      </div>
+      <div class="slide-num">05 / 14</div>
+    </section>
+
+    <!-- 6. Algorithm 1 -->
+    <section class="slide">
+      <div class="eyebrow">Key Algorithm</div>
+      <h2>Shared Backbone · 1회 Encode</h2>
+      <div class="grid-2">
+        <div>
+          <p style="margin-bottom:14px;">추론 시 backbone을 한 번만 실행하고, 동일 feature map을 foot / wound / dfu head가 공유합니다.</p>
+          <div class="card flat" style="margin-bottom:12px;">
+            <h3>왜 중요한가</h3>
+            <p>ViT backbone이 연산의 대부분을 차지하므로, multi-task에서도 latency를 최소화하면서 head를 독립적으로 교체·재학습할 수 있습니다.</p>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <span class="badge">backbone 1×</span>
+            <span class="badge">head 독립 checkpoint</span>
+            <span class="badge">task별 재학습</span>
+          </div>
+        </div>
+        <pre class="code"><span class="cm"># models/pipeline_model.py</span>
+<span class="kw">class</span> <span class="fn">DFUPipelineModel</span>(nn.Module):
+    <span class="kw">def</span> <span class="fn">encode</span>(self, x):
+        <span class="kw">return</span> self.backbone(x)  <span class="cm"># 1회</span>
+
+    <span class="kw">def</span> <span class="fn">predict_foot_logits</span>(self, features, ...):
+        <span class="kw">return</span> self.foot_head(features)
+
+    <span class="kw">def</span> <span class="fn">predict_wound_logits</span>(self, features, ...):
+        <span class="kw">return</span> self.wound_head(features)
+
+    <span class="kw">def</span> <span class="fn">predict_dfu_logits</span>(self, features):
+        <span class="kw">return</span> self.dfu_head(features)</pre>
+      </div>
+      <div class="slide-num">06 / 14</div>
+    </section>
+
+    <!-- 7. Algorithm 2 -->
+    <section class="slide">
+      <div class="eyebrow">Key Algorithm</div>
+      <h2>Gate Logic + Foot Feature Crop</h2>
+      <div class="grid-2">
+        <div>
+          <div class="card flat" style="margin-bottom:12px;">
+            <div class="label">Inference Gate</div>
+            <p><strong>Foot</strong>: area ratio ∈ [0.08, 0.5]<br/>
+               <strong>Wound</strong>: foot 탐지 + 중앙 ±0.25<br/>
+               <strong>DFU</strong>: foot 탐지 시 실행</p>
+          </div>
+          <div class="card flat">
+            <div class="label">Wound Crop</div>
+            <p>foot mask bbox를 margin(0.15)만큼 확장한 feature crop만 wound head에 전달 → 배경 노이즈 감소, 국소 정밀도 향상</p>
+          </div>
+        </div>
+        <pre class="code"><span class="cm"># inference/pipeline.py (요약)</span>
+<span class="kw">def</span> <span class="fn">predict_wound_logits_for_foot_crop</span>(...):
+    bbox = bbox_from_mask(foot_mask, margin)
+    crop = features[..., y0:y1, x0:x1]
+    logits = model.predict_wound_logits(crop, size)
+    full = fill_neg_inf(model_size)
+    full[..., y0:y1, x0:x1] = logits
+    <span class="kw">return</span> full
+
+<span class="cm"># DFU head: spatial mean pooling</span>
+pooled = features.mean(dim=(2, 3))
+<span class="kw">return</span> mlp(pooled)  <span class="cm"># dfu / other</span></pre>
+      </div>
+      <div class="slide-num">07 / 14</div>
+    </section>
+
+    <!-- 8. Timeline -->
+    <section class="slide">
+      <div class="eyebrow">Execution Timeline</div>
+      <h2>프로젝트 진행 타임라인</h2>
+      <div class="timeline">
+        <div class="tl-item">
+          <div class="tl-dot"></div>
+          <div class="when">06.12</div>
+          <div class="what">레포 초기화<br/>backbone·구조 설계</div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot"></div>
+          <div class="when">06.16</div>
+          <div class="what">세그 학습 루프<br/>early stopping</div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot"></div>
+          <div class="when">06.18</div>
+          <div class="what">HF DINOv3 로드<br/>파이프라인 통합</div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot"></div>
+          <div class="when">06.22</div>
+          <div class="what">Foot crop 전처리<br/>분류 데이터셋</div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot"></div>
+          <div class="when">06.30</div>
+          <div class="what">DFU head 실험<br/>오분류 리포트</div>
+        </div>
+        <div class="tl-item">
+          <div class="tl-dot"></div>
+          <div class="when">07.07</div>
+          <div class="what">문서화·평가<br/>image size 512 확정</div>
+        </div>
+      </div>
+      <div class="grid-3" style="margin-top: 36px;">
+        <div class="metric-box">
+          <div class="num">3</div>
+          <div class="cap">독립 Task Heads</div>
+        </div>
+        <div class="metric-box">
+          <div class="num">1×</div>
+          <div class="cap">Backbone Encode / Frame</div>
+        </div>
+        <div class="metric-box">
+          <div class="num">E2E</div>
+          <div class="cap">Train → Infer → UI</div>
+        </div>
+      </div>
+      <div class="slide-num">08 / 14</div>
+    </section>
+
+    <!-- 9. Foot case -->
+    <section class="slide">
+      <div class="eyebrow">Case 01 · Foot Segmentation</div>
+      <h2>발 세그멘테이션</h2>
+      <div class="step-row">
+        <div class="step">
+          <div class="n">P</div>
+          <h3>문제</h3>
+          <p>다양한 촬영 각도·배경에서 발 영역만 안정적으로 분리해야 하며, 신체 오탐을 줄여야 함</p>
+        </div>
+        <div class="step">
+          <div class="n">E</div>
+          <h3>실행</h3>
+          <p>Roboflow foot + hard negative(body) · FastInst queries=8 · neg oversample·loss weight</p>
+        </div>
+        <div class="step">
+          <div class="n">R</div>
+          <h3>성과</h3>
+          <p><strong style="color:var(--blue-deep)">Val Dice 0.959</strong><br/>Val IoU 0.935<br/>(foot_head_v2, 512)</p>
+        </div>
+        <div class="step">
+          <div class="n">I</div>
+          <h3>인사이트</h3>
+          <p>Hard negative와 empty-mask 가중치가 오탐 억제에 결정적. 이후 분류 crop의 품질 기반이 됨</p>
+        </div>
+      </div>
+      <table class="data" style="margin-top:22px;">
+        <thead><tr><th>Run</th><th>Image Size</th><th>Best Val Dice</th><th>Best Val IoU</th></tr></thead>
+        <tbody>
+          <tr><td>foot_head_v1</td><td>512</td><td>0.954</td><td>0.933</td></tr>
+          <tr><td>foot_head_v2</td><td>512</td><td class="hl">0.959</td><td class="hl">0.935</td></tr>
+        </tbody>
+      </table>
+      <div class="slide-num">09 / 14</div>
+    </section>
+
+    <!-- 10. Wound case -->
+    <section class="slide">
+      <div class="eyebrow">Case 02 · Wound Segmentation</div>
+      <h2>궤양 세그멘테이션</h2>
+      <div class="step-row">
+        <div class="step">
+          <div class="n">P</div>
+          <h3>문제</h3>
+          <p>궤양 영역이 작고 경계가 모호하며, 전체 이미지 기준 학습 시 배경에 민감</p>
+        </div>
+        <div class="step">
+          <div class="n">E</div>
+          <h3>실행</h3>
+          <p>FUSeg + Wound Image Dataset · queries=16 · inference 시 foot bbox feature crop</p>
+        </div>
+        <div class="step">
+          <div class="n">R</div>
+          <h3>성과</h3>
+          <p><strong style="color:var(--blue-deep)">Val Dice 0.814</strong><br/>Val IoU 0.738<br/>(wound_head_v1)</p>
+        </div>
+        <div class="step">
+          <div class="n">I</div>
+          <h3>인사이트</h3>
+          <p>학습은 full image, 추론은 foot crop으로 ROI를 좁히면 실사용 정밀도가 올라감. Gate로 잘못된 촬영을 사전 차단</p>
+        </div>
+      </div>
+      <div class="grid-3" style="margin-top:22px;">
+        <div class="card flat"><div class="label">데이터</div><div class="value" style="font-size:22px;">FUSeg + WID</div><div class="desc">positive / negative 혼합</div></div>
+        <div class="card flat"><div class="label">Crop Margin</div><div class="value" style="font-size:22px;">0.15</div><div class="desc">infer.py 기본값</div></div>
+        <div class="card flat"><div class="label">Guide Gate</div><div class="value" style="font-size:22px;">±0.25</div><div class="desc">화면 중앙 정렬 조건</div></div>
+      </div>
+      <div class="slide-num">10 / 14</div>
+    </section>
+
+    <!-- 11. DFU case -->
+    <section class="slide">
+      <div class="eyebrow">Case 03 · DFU Classification</div>
+      <h2>당뇨발 이진 분류</h2>
+      <div class="step-row">
+        <div class="step">
+          <div class="n">P</div>
+          <h3>문제</h3>
+          <p>출처·구도가 다른 데이터에서 dfu vs other를 일반화해야 하며, 클래스 불균형 존재</p>
+        </div>
+        <div class="step">
+          <div class="n">E</div>
+          <h3>실행</h3>
+          <p>AI Hub + Kaggle + PART A · foot crop 전처리 · Linear/MLP ablation · F1 기준 best</p>
+        </div>
+        <div class="step">
+          <div class="n">R</div>
+          <h3>성과</h3>
+          <p><strong style="color:var(--blue-deep)">Test Acc 96.2%</strong><br/>Test F1 93.1%<br/>(mlp + aug)</p>
+        </div>
+        <div class="step">
+          <div class="n">I</div>
+          <h3>인사이트</h3>
+          <p>Foot crop이 도메인 갭을 줄임. MLP+aug가 Linear 대비 F1 개선. 오분류 리포트로 실패 패턴 추적</p>
+        </div>
+      </div>
+      <table class="data" style="margin-top:20px;">
+        <thead>
+          <tr><th>Run</th><th>Head</th><th>Val Acc</th><th>Val F1</th><th>Test Acc</th><th>Test F1</th></tr>
+        </thead>
+        <tbody>
+          <tr><td>dfu_head_v1</td><td>linear</td><td>95.1%</td><td>90.9%</td><td>—</td><td>—</td></tr>
+          <tr><td>dfu_head_mlp_1e3</td><td>mlp</td><td>98.0%</td><td>93.4%</td><td>96.1%</td><td>92.9%</td></tr>
+          <tr><td>dfu_head_mlp_1e3_aug</td><td>mlp+aug</td><td class="hl">97.8%</td><td class="hl">94.4%</td><td class="hl">96.2%</td><td class="hl">93.1%</td></tr>
+        </tbody>
+      </table>
+      <div class="slide-num">11 / 14</div>
+    </section>
+
+    <!-- 12. Performance -->
+    <section class="slide">
+      <div class="eyebrow">Results</div>
+      <h2>기능 · 성능 테스트 요약</h2>
+      <div class="grid-4" style="margin-bottom:18px;">
+        <div class="metric-box"><div class="num">0.959</div><div class="cap">Foot Val Dice</div></div>
+        <div class="metric-box"><div class="num">0.814</div><div class="cap">Wound Val Dice</div></div>
+        <div class="metric-box"><div class="num">96.2%</div><div class="cap">DFU Test Accuracy</div></div>
+        <div class="metric-box"><div class="num">93.1%</div><div class="cap">DFU Test F1</div></div>
+      </div>
+      <table class="data">
+        <thead>
+          <tr><th>기능</th><th>검증 방법</th><th>결과 / 지표</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>통합 Inference CLI</td>
+            <td><code>infer.py</code> · mask/overlay/JSON</td>
+            <td>foot→wound→dfu 게이트 동작 확인</td>
+          </tr>
+          <tr>
+            <td>Hold-out Evaluation</td>
+            <td><code>scripts/evaluate.py</code></td>
+            <td>dice/iou · acc/precision/recall/f1</td>
+          </tr>
+          <tr>
+            <td>DFU Head 비교</td>
+            <td><code>evaluate_dfu_heads_on_test.py</code></td>
+            <td>MLP+aug가 Test F1 best</td>
+          </tr>
+          <tr>
+            <td>Realtime UI</td>
+            <td>Gradio + FastRTC</td>
+            <td>오버레이 + 0.5s JSON 갱신</td>
+          </tr>
+          <tr>
+            <td>촬영 가이드</td>
+            <td>area / center gate</td>
+            <td>잘못된 입력 사전 차단 · UX 메시지</td>
+          </tr>
+        </tbody>
+      </table>
+      <div class="slide-num">12 / 14</div>
+    </section>
+
+    <!-- 13. GitHub & Deliverables -->
+    <section class="slide">
+      <div class="eyebrow">Links & Deliverables</div>
+      <h2>GitHub · 산출물</h2>
+      <div class="card" style="margin-bottom:18px; display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <div class="label">Source Repository</div>
+          <h3 style="font-size:22px; margin:0;">yoonsula / dfu-project</h3>
+          <p style="margin-top:6px;">발·궤양 세그멘테이션 + DFU 분류 통합 파이프라인</p>
+        </div>
+        <a class="badge metric" href="https://github.com/yoonsula/dfu-project" style="text-decoration:none;">
+          github.com/yoonsula/dfu-project
+        </a>
+      </div>
+      <div class="grid-3">
+        <div class="card flat">
+          <div class="label">Training</div>
+          <h3>train.py</h3>
+          <p>task dispatcher · foot / wound / dfu 독립 학습</p>
+        </div>
+        <div class="card flat">
+          <div class="label">Inference</div>
+          <h3>infer.py</h3>
+          <p>gated pipeline · timing JSON · overlay export</p>
+        </div>
+        <div class="card flat">
+          <div class="label">Demo UI</div>
+          <h3>app_gradio.py</h3>
+          <p>이미지 분석 + WebRTC 실시간 탭</p>
+        </div>
+      </div>
+      <div class="slide-num">13 / 14</div>
+    </section>
+
+    <!-- 14. One-liner -->
+    <section class="slide">
+      <div class="eyebrow">One-liner</div>
+      <div class="closing">
+        <p class="quote">
+          <em>하나의 frozen backbone</em>으로<br/>
+          발 탐지 · 궤양 분할 · DFU 분류를 묶고,<br/>
+          게이트와 crop으로 <em>실사용 정밀도</em>까지 끌어올린<br/>
+          의료 영상 분석 파이프라인.
+        </p>
+        <div style="margin-top:40px; display:flex; gap:10px; flex-wrap:wrap;">
+          <span class="badge metric">Dice 0.959 / 0.814</span>
+          <span class="badge metric">DFU F1 93.1%</span>
+          <span class="badge soft">github.com/yoonsula/dfu-project</span>
+        </div>
+        <p style="margin-top:28px; font-size:14px; color:var(--text-muted);">윤수 라 · DFU Foot Analysis Pipeline Portfolio · 2026</p>
+      </div>
+      <div class="slide-num">14 / 14</div>
+    </section>
+
+  </div>
+</body>
+</html>
